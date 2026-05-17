@@ -1,8 +1,8 @@
 /**
  * NAQAL GO - Map picker component (WebView + Leaflet, dark theme, works without Google API key)
  */
-import React, { forwardRef, useImperativeHandle, useRef, useCallback, useState } from 'react';
-import { StyleSheet, View, ActivityIndicator } from 'react-native';
+import React, { forwardRef, useImperativeHandle, useRef, useCallback, useState, useEffect } from 'react';
+import { StyleSheet, View, ActivityIndicator, Platform } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { colors } from '@/src/theme';
 
@@ -203,6 +203,19 @@ const MapPicker = forwardRef<MapPickerHandle, MapPickerProps>(function MapPicker
     [onLocationPicked]
   );
 
+  if (Platform.OS === 'web') {
+    return (
+      <WebMap
+        initialCenter={initialCenter}
+        pickup={pickup}
+        dropoff={dropoff}
+        activeMode={activeMode}
+        driverLocation={driverLocation}
+        onLocationPicked={onLocationPicked}
+      />
+    );
+  }
+
   return (
     <View style={styles.container}>
       <WebView
@@ -225,6 +238,66 @@ const MapPicker = forwardRef<MapPickerHandle, MapPickerProps>(function MapPicker
     </View>
   );
 });
+
+/** Web-only map using an iframe with the same Leaflet HTML. */
+function WebMap({
+  initialCenter,
+  pickup,
+  dropoff,
+  activeMode,
+  driverLocation,
+  onLocationPicked,
+}: MapPickerProps) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [ready, setReady] = useState(false);
+
+  const post = useCallback((payload: any) => {
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify(payload), '*');
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const handler = (e: MessageEvent) => {
+      try {
+        const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+        if (data?.type === 'ready') setReady(true);
+        if (data?.type === 'marker' && onLocationPicked) {
+          onLocationPicked(data.mode, { latitude: data.latitude, longitude: data.longitude });
+        }
+      } catch {}
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [onLocationPicked]);
+
+  useEffect(() => {
+    if (!ready) return;
+    post({ type: 'setActive', mode: activeMode });
+    if (pickup) post({ type: 'setPickup', ...pickup });
+    if (dropoff) post({ type: 'setDropoff', ...dropoff });
+    if (driverLocation) post({ type: 'setDriver', ...driverLocation });
+  }, [ready, activeMode, pickup, dropoff, driverLocation, post]);
+
+  const html = buildHtml(initialCenter || DEFAULT_CENTER);
+  const srcDoc = html;
+
+  return (
+    <View style={styles.container}>
+      {/* @ts-ignore - iframe is web only */}
+      <iframe
+        ref={iframeRef as any}
+        srcDoc={srcDoc}
+        style={{
+          width: '100%',
+          height: '100%',
+          border: 'none',
+          backgroundColor: colors.appBg,
+        }}
+        title="map"
+      />
+    </View>
+  );
+}
 
 export default MapPicker;
 

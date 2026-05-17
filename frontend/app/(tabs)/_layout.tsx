@@ -31,9 +31,18 @@ export default function TabsLayout() {
         },
       })}
     >
-      <Tabs.Screen name="index" options={{ title: t.tabHome }} />
-      <Tabs.Screen name="orders" options={{ title: t.tabOrders }} />
-      <Tabs.Screen name="profile" options={{ title: t.tabProfile }} />
+      <Tabs.Screen
+        name="index"
+        options={{ title: t.tabHome, tabBarButtonTestID: 'tab-home' }}
+      />
+      <Tabs.Screen
+        name="orders"
+        options={{ title: t.tabOrders, tabBarButtonTestID: 'tab-orders' }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{ title: t.tabProfile, tabBarButtonTestID: 'tab-profile' }}
+      />
     </Tabs>
   );
 }

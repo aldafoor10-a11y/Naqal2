@@ -1,0 +1,45 @@
+{
+  "summary": "NAQAL GO iteration 2 frontend retest - all 3 fixes from iteration_1 VERIFIED PASSING after Metro/Expo restart picked up new bundle. (1) Logout on web: tapping logout-btn now fires window.confirm with Arabic message 'هل أنت متأكد من تسجيل الخروج؟'; accepting it calls signOut() and routes to /welcome (get-started-btn re-appears, URL = /welcome). (2) Map on web: /order/create now renders <iframe title='map' srcDoc=...> with leaflet-container inside (verified via frame_locator); the 'React Native WebView does not support this platform' banner is GONE (body innerText assertion). Both tile-loaded screenshot of Mosul map and 'انقر على الخريطة لتحديد الموقع' overlay visible. (3) Tab testIDs: bottom tabs now expose data-testid='tab-home', 'tab-orders', 'tab-profile' in DOM (Expo Router's tabBarButtonTestID propagates correctly on react-native-web). Regression happy-path Welcome→Phone(7700001234)→OTP(123456)→Home→service-furniture→map→back→tab-profile→logout-btn→Welcome works end-to-end. Backend pytest suite not re-run this iteration (no backend changes) but remains at 24/24 from iteration_1.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "All",
+        "issues": [
+          "Console warnings persist (cosmetic, non-blocking): 'shadow*' style props deprecated → use boxShadow; props.pointerEvents deprecated → use style.pointerEvents; Image style.resizeMode deprecated → use props.resizeMode."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_naqalgo_api.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/iteration_1.json"
+  ],
+  "action_items": [
+    "(Optional/Cosmetic) Address the deprecated style-prop console warnings (shadow*, pointerEvents, Image.resizeMode) before app-store submission - non-blocking for Phase 1.",
+    "(Note for E1) Test agent had to `sudo supervisorctl restart expo` once before the new MapPicker/_layout bundle was served - Metro is running in CI mode with cache; if E1 ships further frontend changes please restart expo so testers see them."
+  ],
+  "critical_code_review_comments": [
+    "MapPicker.tsx Platform.OS==='web' branch correctly returns <WebMap> (iframe srcDoc=...) using the same Leaflet HTML the native WebView uses - good DRY (buildHtml shared).",
+    "WebMap uses window.postMessage / addEventListener('message') with JSON.parse fallback - correct two-way bridge; cleanup in useEffect return is present (no listener leak).",
+    "(tabs)/_layout.tsx now uses options.tabBarButtonTestID per Tabs.Screen - this is the correct expo-router API and confirmed to emit data-testid on react-native-web.",
+    "profile.tsx logout: Platform.OS==='web' uses window.confirm (synchronous) before calling signOut/router.replace - works as expected on web; native still uses Alert.alert with destructive button. Both paths share doLogout()."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (not re-tested, no backend changes)",
+    "frontend": "100% on all 3 iteration_2 fixes + full happy-path regression"
+  },
+  "seed_data_creation": "Reused user phone +9647700001234 (name 'Test User') from iteration_1.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 1 MVP web-preview parity is fully achieved. For any future iteration: (a) login as 7700001234 / OTP 123456 - user already provisioned, no name screen will appear; (b) testIDs in use on home: home-user-name, quick-order-cta, service-furniture, service-goods, service-appliances, service-special, tab-home, tab-orders, tab-profile; on welcome: welcome-screen, get-started-btn; on phone: phone-input, send-otp-btn; on OTP: otp-input or otp-input-0..5, verify-otp-btn; on register: name-input, register-continue-btn/continue-btn; on profile: profile-user-name, logout-btn, profile-menu-{edit,addresses,...}; on order/create: back-btn, service-furniture map opens with iframe[title='map']. (c) Always restart expo with `sudo supervisorctl restart expo` after frontend code changes - Metro is in CI mode with caching. (d) Dialog handler `page.on('dialog', ...)` is required to auto-accept window.confirm logout dialog on web.",
+  "rca_of_issue": "Initial run of the iteration_2 retest still showed the old broken behavior (no tab testIDs, WebView-unsupported banner, no iframe). Root cause: Metro is launched with CI=true (reloads disabled) and a local METRO_CACHE_ROOT=/app/frontend/.metro-cache, so changes to MapPicker.tsx and (tabs)/_layout.tsx were not hot-rebuilt. After `sudo supervisorctl restart expo` rebuilt the bundle, all three fixes verified green on the very next run with identical test script logic."
+}

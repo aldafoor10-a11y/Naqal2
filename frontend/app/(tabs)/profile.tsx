@@ -2,7 +2,7 @@
  * Profile tab
  */
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Image, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,17 +27,23 @@ export default function Profile() {
   const t = translations.ar;
   const { user, signOut } = useAuth();
 
+  const doLogout = async () => {
+    await signOut();
+    router.replace('/(auth)/welcome');
+  };
+
   const handleLogout = () => {
+    if (Platform.OS === 'web') {
+      // react-native-web Alert.alert silently no-ops on destructive variants;
+      // use the browser-native confirm for parity.
+      // eslint-disable-next-line no-alert
+      const ok = typeof window !== 'undefined' && window.confirm('هل أنت متأكد من تسجيل الخروج؟');
+      if (ok) doLogout();
+      return;
+    }
     Alert.alert('تسجيل الخروج', 'هل أنت متأكد من تسجيل الخروج؟', [
       { text: 'إلغاء', style: 'cancel' },
-      {
-        text: 'خروج',
-        style: 'destructive',
-        onPress: async () => {
-          await signOut();
-          router.replace('/(auth)/welcome');
-        },
-      },
+      { text: 'خروج', style: 'destructive', onPress: doLogout },
     ]);
   };
 
