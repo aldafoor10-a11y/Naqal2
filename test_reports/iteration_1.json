@@ -1,0 +1,76 @@
+{
+  "summary": "NAQAL GO Phase 1 MVP testing - Backend: 24/24 pytest cases pass (100%) covering health, OTP normalization & verify (incl. invalid code), profile update, /auth/me, admin login (success + 401), pricing config & tier-based estimates (<3km fixed, 3-10km range, vehicle multiplier ordering), order CRUD (create/list/get/cancel), 403 cross-customer isolation, simulate-accept (driver assignment + driver_location), full simulate-progress cycle (accepted→arriving→picked_up→in_transit→completed), and cancel guard on completed orders. No _id leakage observed. Frontend: Welcome→Phone→OTP→Register→Home flow works end-to-end with testIDs. Service cards (4), vehicle cards (4), use-current-loc-btn, profile-user-name, logout-btn all render. Tabs navigation (home/orders/profile) functional via text. Orders empty-state shows correct Arabic copy. Profile shows user info + stats + menu. Two web-preview-only issues identified (map WebView + Alert.alert logout dialog) that do NOT affect native Expo Go / native builds.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "(tabs)/profile.tsx logout flow",
+        "issue": "Alert.alert('تسجيل الخروج', ..., [{cancel},{خروج}]) does NOT render a visible confirmation dialog on react-native-web. Tapping logout-btn does nothing visible on web preview; user can never sign out from the web build. Works on native (iOS/Android/Expo Go). For full cross-platform support, replace Alert.alert with a custom <Modal> or branch on Platform.OS === 'web' to use window.confirm.",
+        "testID": "logout-btn",
+        "priority": "HIGH"
+      },
+      {
+        "component": "components/MapPicker.tsx (react-native-webview on web)",
+        "issue": "Order create screen shows the error banner \"React Native WebView does not support this platform.\" on web preview. The Leaflet map therefore cannot render and pickup/dropoff cannot be tap-selected when previewing via web. Functionality works only on native. Consider rendering an <iframe>/native-DOM Leaflet fallback when Platform.OS === 'web'.",
+        "testID": "n/a",
+        "priority": "HIGH"
+      },
+      {
+        "component": "(tabs)/_layout.tsx bottom tab bar",
+        "issue": "Tab bar buttons lack testIDs (tab-home / tab-orders / tab-profile expected per spec). Tabs are reachable only via translated Arabic labels which is brittle. Add tabBarButtonTestID via screenOptions or pass tabBarTestID per Screen.",
+        "testID": "tab-home, tab-orders, tab-profile",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "All",
+        "issues": [
+          "Console warnings: 'shadow*' style props are deprecated (use boxShadow) - cosmetic.",
+          "Console warning: props.pointerEvents is deprecated (use style.pointerEvents) - cosmetic.",
+          "Console warning: Image style.resizeMode is deprecated (use props.resizeMode) - cosmetic."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "MapPicker WebView",
+        "issue": "react-native-webview is unsupported on react-native-web; user-facing red-text banner is visible inside the order/create screen for any web preview tester."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_naqalgo_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Replace Alert.alert in profile logout (and any other multi-button Alerts) with a custom RN <Modal> OR Platform.OS==='web' fallback using window.confirm so logout works on web preview.",
+    "Add a web fallback for MapPicker (e.g., conditional render of an <iframe srcDoc=...> or <div id='leaflet-map'> with Leaflet CDN) so the map renders in Expo web preview.",
+    "Add testIDs to the bottom tabs (tab-home, tab-orders, tab-profile) via tabBarButtonTestID in (tabs)/_layout.tsx to match spec and enable robust E2E.",
+    "(Cosmetic) Replace deprecated shadow* / Image.resizeMode / pointerEvents style props with their non-deprecated counterparts to silence console warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~690 lines - acceptable for Phase 1 but consider splitting into routes/{auth,orders,pricing}.py before adding driver-app endpoints.",
+    "JWT_SECRET has a dev fallback ('naqal-go-dev-secret-change-in-prod'). For production, fail-fast when missing.",
+    "send_otp returns mock_code in the response payload - intentional for Phase 1 mock but must be removed before any real SMS provider is wired.",
+    "All MongoDB reads correctly project {'_id': 0} or pop('_id', None) after insert - good, no ObjectId leakage detected.",
+    "Order cancel/rate handlers fetch documents without {'_id': 0}; the dict is used only internally for checks (not serialized) so OK, but recommend consistent projection.",
+    "frontend/src/api/client.ts and AuthContext.tsx not deeply audited - relied on observed end-to-end behavior (login/logout/me all returning correct user)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_naqalgo_api.py (new pytest suite, 24 tests)"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "~80% - all auth/home/orders/profile UI works; map WebView and logout Alert broken on web preview only"
+  },
+  "seed_data_creation": "Created test user with phone +9647700009911 (name TEST_Customer), phone +9647700009922, and one customer phone +9647700001234 (name 'Test User') used by UI tests. Orders prefixed TEST_ in cargo_description/address fields.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest at /app/backend/tests/test_naqalgo_api.py is fully green and can be re-run as regression (`pytest backend/tests/test_naqalgo_api.py -v`). For UI re-test after fixes: (1) confirm logout-btn shows a confirm dialog on web and signs the user out back to welcome screen, (2) confirm the order/create map renders without the red 'WebView does not support this platform' banner, (3) verify tab-home/tab-orders/tab-profile testIDs exist on bottom tabs. Login flow: enter phone 7700001234, OTP 123456, name 'Test User'. The user persists across runs.",
+  "rca_of_issue": "Logout broken on web: React Native's Alert.alert with a buttons[] array is only fully supported on iOS/Android. react-native-web's polyfill collapses multi-button alerts and the destructive 'خروج' callback is never invoked, so signOut()+router.replace('/(auth)/welcome') never runs. Map missing on web: react-native-webview has no web implementation; it renders a stub View with the message 'React Native WebView does not support this platform.' Both are platform-specific limitations that should be guarded with Platform.OS === 'web' branches."
+}
