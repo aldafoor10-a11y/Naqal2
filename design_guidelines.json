@@ -1,0 +1,164 @@
+{
+  "theme_info": {
+    "app_name": "NAQAL GO",
+    "domain": "Logistics & Delivery",
+    "theme_mode": "DARK",
+    "archetype": "Archetype 5 (Jewel & Luxury)",
+    "rationale": "To position NAQAL GO as a premium, secure, and professional logistics service, moving away from generic bright-colored delivery apps. The dark theme with gold/amber accents evokes high-end transportation (akin to Uber Black), building trust for transporting valuable furniture and goods.",
+    "language": "Arabic (RTL) Default, English (LTR) Optional"
+  },
+  "colors": {
+    "primary_brand": {
+      "gold": "#D4A437",
+      "dark_brown": "#3D2817"
+    },
+    "backgrounds": {
+      "app_bg": "#0D0907",
+      "surface_1": "#1A120C",
+      "surface_2": "#281C13",
+      "overlay": "rgba(13, 9, 7, 0.7)"
+    },
+    "text": {
+      "primary": "#F5F0E6",
+      "secondary": "#A69C92",
+      "on_brand": "#0D0907",
+      "disabled": "#5A524A"
+    },
+    "status": {
+      "success": "#34C759",
+      "warning": "#FF9F0A",
+      "error": "#FF453A",
+      "info": "#0A84FF"
+    }
+  },
+  "typography": {
+    "font_family": {
+      "primary_arabic": "Tajawal, Cairo, or IBM Plex Sans Arabic",
+      "primary_english": "Outfit or Inter"
+    },
+    "scale": {
+      "h1": { "size": 32, "weight": "700", "line_height": 40 },
+      "h2": { "size": 24, "weight": "700", "line_height": 32 },
+      "h3": { "size": 20, "weight": "600", "line_height": 28 },
+      "body_large": { "size": 16, "weight": "400", "line_height": 24 },
+      "body": { "size": 14, "weight": "400", "line_height": 20 },
+      "caption": { "size": 12, "weight": "400", "line_height": 16 }
+    },
+    "rules": {
+      "headings": "Use bold weights for headings to ensure legibility in Arabic. Ensure line heights accommodate Arabic diacritics.",
+      "numbers": "Use standard Arabic numerals (1, 2, 3) for pricing and distances for clarity, formatted with IQD (e.g., 12,000 د.ع)."
+    }
+  },
+  "spacing_and_layout": {
+    "base_unit": 4,
+    "scale": {
+      "xs": 4,
+      "sm": 8,
+      "md": 16,
+      "lg": 24,
+      "xl": 32,
+      "xxl": 48
+    },
+    "border_radius": {
+      "sm": 8,
+      "md": 16,
+      "lg": 24,
+      "pill": 9999
+    },
+    "rtl_rules": {
+      "flex_direction": "Use 'row-reverse' for Arabic, or rely on I18nManager.forceRTL(true) which automatically flips 'row'.",
+      "text_align": "Right-aligned by default in Arabic. Left-aligned for numbers/English text if necessary.",
+      "icons": "Mirror directional icons (e.g., back arrows)."
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": {
+        "bg": "#D4A437",
+        "text": "#0D0907",
+        "radius": "pill",
+        "padding_vertical": 16,
+        "font_weight": "700"
+      },
+      "secondary": {
+        "bg": "#281C13",
+        "text": "#D4A437",
+        "border": "1px solid #3D2817",
+        "radius": "pill"
+      }
+    },
+    "cards": {
+      "service_card": {
+        "bg": "#1A120C",
+        "border": "1px solid #3D2817",
+        "radius": "md",
+        "padding": 16,
+        "shadow": "0px 4px 12px rgba(0,0,0,0.5)"
+      },
+      "map_overlay_card": {
+        "bg": "rgba(26, 18, 12, 0.85)",
+        "blur": "true",
+        "radius": "lg"
+      }
+    },
+    "inputs": {
+      "text_input": {
+        "bg": "#0D0907",
+        "border": "1px solid #3D2817",
+        "text_color": "#F5F0E6",
+        "radius": "md",
+        "padding": 16,
+        "focus_border": "#D4A437"
+      }
+    },
+    "map": {
+      "style": "Dark mode map style required. Roads should be dark grey/brown, background almost black, route lines in Gold (#D4A437). Use custom JSON array for React Native Maps provider='google'."
+    }
+  },
+  "screens": {
+    "login": {
+      "layout": "Hero image/logo at top, Phone input and OTP below. Heavy use of the dark brown/gold aesthetic. Feel: Secure and exclusive."
+    },
+    "home": {
+      "layout": "Welcome header with user name and profile pic. 2x2 Grid of Service Cards (Furniture, Goods, Appliances, Special). Recent orders horizontal list below."
+    },
+    "map_selection": {
+      "layout": "Full screen map. Floating search bar for Pickup/Dropoff (RTL aligned). Bottom sheet for Vehicle Selection (Kia, Pickup, Medium, Large) with real-time price estimation."
+    },
+    "order_tracking": {
+      "layout": "Map focusing on driver location. Bottom sheet showing Driver Info (photo, rating, truck plate), Call/Chat buttons, and ETA."
+    }
+  },
+  "media_urls": {
+    "logo": {
+      "url": "https://customer-assets.emergentagent.com/job_eb826b44-ecc6-46f2-b4e7-84a184f8d38a/artifacts/x4ziw5ow_IMG_20260419_223622_456.webp",
+      "description": "Official NAQAL GO Logo"
+    },
+    "onboarding_truck": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/eb826b44-ecc6-46f2-b4e7-84a184f8d38a/images/61df99897cce870648c8537857ad64e46112a9cacab3c03ea5f555a99b86e2bf.png",
+      "description": "Cinematic dark/gold truck for onboarding/hero backgrounds."
+    },
+    "premium_dark_bg": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/eb826b44-ecc6-46f2-b4e7-84a184f8d38a/images/c3f5978ca5302ab32e00382ad2a19d65093bb3c4d0f2624b76b63cdb40f00cdb.png",
+      "description": "Abstract elegant background for login or profile screens."
+    },
+    "service_icons": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/eb826b44-ecc6-46f2-b4e7-84a184f8d38a/images/0eb5a64eaae3a32bb3005c57dcd2f1aba22da815c9ea8aec95c0f816c0571942.png",
+      "description": "3D reference for service category icons."
+    },
+    "stock_truck": {
+      "url": "https://images.unsplash.com/photo-1651928977880-ffb2d963b6b4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHwzfHxwcmVtaXVtJTIwZGFyayUyMGxvZ2lzdGljcyUyMHRydWNrfGVufDB8fHx8MTc3OTA1MzA1OHww&ixlib=rb-4.1.0&q=85",
+      "description": "Real life truck reference for vehicle selection."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Ensure I18nManager from 'react-native' is configured for RTL properly. All Layouts should respect RTL (Right to Left) flow.",
+    "Use Phosphor Icons or similar icon library, and flip directional icons (like chevrons/arrows) horizontally for RTL.",
+    "For the Map, use react-native-maps with a custom mapStyle JSON to make it dark mode, utilizing #0D0907 for land and #1A120C for roads, with #D4A437 for the route polyline.",
+    "Apply `data-testid` to all interactive elements (buttons, inputs, list items) to support automated testing.",
+    "Component files should be `.js` (not `.tsx`). Utilize React Native StyleSheet or NativeWind if configured, adhering strictly to the dark brown/gold color palette.",
+    "Avoid generic 'card' looks. Use subtle 1px borders (#3D2817) and heavy shadows to create depth on the dark background.",
+    "Currency formatting: Always format prices as 'X,XXX د.ع' (Iraqi Dinar).",
+    "Images MUST NOT be placeholders. Use the provided media_urls for UI implementation."
+  ]
+}
