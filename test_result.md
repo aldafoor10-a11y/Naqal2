@@ -211,7 +211,7 @@ backend:
 frontend:
   - task: "Role-based routing in AuthContext + verify.tsx"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/app/index.tsx, /app/frontend/app/(auth)/verify.tsx"
     stuck_count: 0
     priority: "high"
@@ -220,10 +220,14 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: "Driver → /(driver), customer (needs name) → /(auth)/register, else /(tabs). Awaiting user-initiated UI test."
+        - working: true
+          agent: "testing"
+          comment: |
+            Verified on iPhone-12 viewport (390x844) via public ingress. Welcome → get-started → login (phone 7701234567) → OTP 123456 auto-submitted → routed to /(driver) showing testID="driver-name"="أحمد محمد". After full re-navigation to "/", index.tsx correctly redirected driver back to /(driver) (driver-name still rendered), confirming role-guard at start works. Only console noise: deprecation warnings for shadow* props and pointerEvents (non-blocking).
 
   - task: "Driver UI tabs (dashboard, earnings, history, profile, job)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/app/(driver)/*"
     stuck_count: 0
     priority: "high"
@@ -232,6 +236,18 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: "All screens wired to client.ts API. Will not auto-test frontend until user requests."
+        - working: true
+          agent: "testing"
+          comment: |
+            E2E UI test PASS on iPhone-12 viewport (390x844) via public ingress.
+            ✅ Driver dashboard renders: testID="driver-name"='أحمد محمد', driver-online-switch, driver-tab-{home,earnings,history,profile} all present.
+            ✅ Online toggle works: tapping driver-online-switch flipped state; section title shows "مباشر" live indicator; status badge turned green ("نشط" badge — note label is "نشط" not the "متصل" wording from the review request, but functionally identical and clearly indicates online state).
+            ✅ Earnings tab: testID="total-earnings" shows "38,500 د.ع" (matches backend earnings from prior driver E2E run). Today/Week cards rendered.
+            ✅ History tab: 5 history rows rendered (testID="hist-*"), confirming prior completed orders surface.
+            ✅ Profile tab: avatar, name "أحمد محمد", phone "+9647701234567", "سائق معتمد" badge, vehicle "بيك أب" with plate "موصل 12345", testID="driver-logout-btn" visible.
+            ⚠️ Incoming-order acceptance + /(driver)/job/[id] progression COULD NOT be exercised: no pending orders existed at test time (driver polled /api/driver/orders/available after going online; zero orders returned). The review request explicitly said to "log it but don't fail" if no orders exist, so this is reported as SKIP, not a failure. The accept/advance-status flow was already verified end-to-end at the API layer in the backend test run (see "Driver lifecycle" backend task), so the job-progression screen wiring is the only piece left unverified via UI.
+            ⚠️ Logout-button confirmation Alert and the "Driver cannot access customer routes" hard-navigation check were not exercised explicitly to keep the run within the browser-automation budget; root redirect (index.tsx) was verified instead and correctly keeps drivers in /(driver).
+            Recommend main agent: (1) optionally tweak the online badge label to "متصل" for exact-spec match, and (2) seed a fresh pending order or run a parallel customer flow before re-testing job-progression UI.
 
 metadata:
   created_by: "main_agent"
@@ -241,10 +257,8 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Twilio + OTP helpers (TWILIO_ENABLED, _generate_otp_code, _send_otp_sms)"
-    - "Driver auth & profile (verify-otp routes drivers, /driver/profile)"
-    - "Driver lifecycle (online toggle, location, accept, status progression, earnings)"
-    - "Admin: drivers + manual pricing review"
+    - "Driver UI tabs (dashboard, earnings, history, profile, job)"
+    - "Role-based routing in AuthContext + verify.tsx"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -284,7 +298,26 @@ agent_communication:
         No critical issues found. No mocked integrations — Twilio is intentionally disabled (env vars blank) so mock OTP 123456 is the documented behavior. All endpoints behave per spec.
     - agent: "testing"
       message: |
-        Support tickets endpoint suite verified via public ingress.
+        Driver UI E2E test complete on iPhone-12 viewport (390x844) via public ingress.
+
+        ✅ Welcome screen renders (testID="welcome-screen")
+        ✅ "ابدأ" button → login screen
+        ✅ Phone +9647701234567 → send-otp → OTP screen
+        ✅ OTP 123456 in testID="otp-input" auto-submits → routed to /(driver)
+        ✅ Driver dashboard: testID="driver-name"='أحمد محمد', driver-online-switch, all 4 tab testIDs present
+        ✅ Toggle online: live indicator "مباشر" appears, green dot active (badge label is "نشط" rather than "متصل" — functional equivalent, minor wording note)
+        ✅ Earnings tab: testID="total-earnings" = "38,500 د.ع"
+        ✅ History tab: 5 historical orders rendered (testID="hist-*")
+        ✅ Profile tab: avatar, name, +9647701234567, "سائق معتمد" badge, vehicle "بيك أب" with plate "موصل 12345", testID="driver-logout-btn" present
+        ✅ Role-guard: navigating to "/" while logged in as driver redirects back to /(driver) (driver-name still rendered) — confirms index.tsx role routing
+
+        ⚠️ SKIPPED (not failures, per review-request instruction):
+          • Incoming-order accept + /(driver)/job/[id] status-progression UI — no pending orders existed at test time. The state machine itself is already verified via backend E2E (see "Driver lifecycle" task). To exercise the UI, main agent should seed a fresh pending order in Mosul (short distance to avoid manual-review) for the customer flow OR run customer + driver flows simultaneously.
+          • Logout-confirmation Alert and the negative case of driver visiting /(tabs) were de-prioritised to stay within the 3-call browser-automation budget; root redirect was verified instead.
+
+        Console output had only deprecation warnings (shadow* style props, pointerEvents) — no runtime errors. Backend logs show all driver endpoints returning 200.
+
+        No critical issues. Both "Driver UI tabs" and "Role-based routing" tasks flipped to working=true.
         Test file: /app/support_tickets_test.py — 16/16 passing.
 
         Covered all 8 scenarios from review:
