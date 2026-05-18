@@ -16,7 +16,9 @@ from typing import List, Optional, Literal
 import bcrypt
 import jwt
 import socketio
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header
+import httpx
+import asyncio
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -623,6 +625,13 @@ async def create_order(req: CreateOrderRequest, current_user: dict = Depends(get
             await sio.emit("new_order", {"order": order}, room="drivers")
         except Exception:
             pass
+        asyncio.create_task(
+            _broadcast_push_to_online_drivers(
+                "🚚 طلب جديد متاح",
+                f"{order.get('cargo_description') or 'طلب نقل'} • {int(order.get('final_price') or 0):,} د.ع",
+                {"type": "new_order", "order_id": order["id"]},
+            )
+        )
     return {"success": True, "order": order}
 
 
@@ -1530,6 +1539,253 @@ async def admin_update_ticket_status(
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return {"success": True, "status": req.status}
+
+
+# -------------------------------------------------------------------
+# Expo Push Notifications
+# -------------------------------------------------------------------
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+
+
+class PushTokenRequest(BaseModel):
+    token: str
+    platform: Optional[str] = None  # "ios" | "android"
+
+
+async def _send_push(
+    user_ids: list[str],
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+) -> None:
+    """Fire-and-forget push to a list of users."""
+    if not user_ids:
+        return
+    users = await db.users.find(
+        {"id": {"$in": user_ids}, "expo_push_token": {"$exists": True, "$ne": ""}},
+        {"_id": 0, "expo_push_token": 1, "id": 1},
+    ).to_list(length=100)
+    messages = [
+        {
+            "to": u["expo_push_token"],
+            "sound": "default",
+            "title": title,
+            "body": body,
+            "data": data or {},
+            "priority": "high",
+            "channelId": "default",
+        }
+        for u in users
+        if u.get("expo_push_token", "").startswith("ExponentPushToken[")
+    ]
+    if not messages:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client_http:
+            r = await client_http.post(
+                EXPO_PUSH_URL,
+                json=messages,
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip, deflate",
+                    "Content-Type": "application/json",
+                },
+            )
+            if r.status_code >= 400:
+                logger.warning(f"Expo push failed: {r.status_code} {r.text}")
+    except Exception as exc:
+        logger.warning(f"Expo push error: {exc}")
+
+
+async def _broadcast_push_to_online_drivers(title: str, body: str, data: dict) -> None:
+    drivers = await db.users.find(
+        {
+            "user_type": "driver",
+            "is_online": True,
+            "is_approved": True,
+            "expo_push_token": {"$exists": True, "$ne": ""},
+        },
+        {"_id": 0, "id": 1},
+    ).to_list(length=200)
+    if drivers:
+        await _send_push([d["id"] for d in drivers], title, body, data)
+
+
+@api.put("/auth/push-token")
+async def register_push_token(
+    req: PushTokenRequest, current_user: dict = Depends(get_current_user)
+):
+    """Persist a user's Expo push token."""
+    token = req.token.strip()
+    if not token.startswith("ExponentPushToken[") and not token.startswith("ExpoPushToken["):
+        # Allow empty to clear, but reject obvious junk
+        if token != "":
+            raise HTTPException(status_code=400, detail="Invalid Expo push token format")
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {
+            "$set": {
+                "expo_push_token": token,
+                "push_platform": req.platform or "",
+                "push_updated_at": now_utc().isoformat(),
+            }
+        },
+    )
+    return {"success": True}
+
+
+# -------------------------------------------------------------------
+# Customer ratings
+# -------------------------------------------------------------------
+class RateOrderRequest(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    review: Optional[str] = None
+
+
+@api.post("/orders/{order_id}/rate")
+async def customer_rate_order(
+    order_id: str,
+    req: RateOrderRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("user_type") != "customer":
+        raise HTTPException(status_code=403, detail="Only customers can rate")
+    order = await db.orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order["customer_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not your order")
+    if order.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="You can only rate completed orders")
+    if order.get("customer_rating"):
+        raise HTTPException(status_code=400, detail="Order is already rated")
+    if not order.get("driver_id"):
+        raise HTTPException(status_code=400, detail="No driver assigned to this order")
+
+    review_text = (req.review or "").strip()[:500]
+    now = now_utc().isoformat()
+    await db.orders.update_one(
+        {"id": order_id},
+        {
+            "$set": {
+                "customer_rating": req.rating,
+                "customer_review": review_text,
+                "rated_at": now,
+                "updated_at": now,
+            }
+        },
+    )
+
+    # Update driver's running average
+    pipeline = [
+        {"$match": {"driver_id": order["driver_id"], "customer_rating": {"$gte": 1}}},
+        {
+            "$group": {
+                "_id": None,
+                "avg": {"$avg": "$customer_rating"},
+                "cnt": {"$sum": 1},
+            }
+        },
+    ]
+    avg_doc = None
+    async for row in db.orders.aggregate(pipeline):
+        avg_doc = row
+    if avg_doc:
+        await db.users.update_one(
+            {"id": order["driver_id"]},
+            {
+                "$set": {
+                    "rating": round(float(avg_doc["avg"]), 2),
+                    "rating_count": int(avg_doc["cnt"]),
+                }
+            },
+        )
+
+    # Notify driver
+    asyncio.create_task(
+        _send_push(
+            [order["driver_id"]],
+            f"⭐ {req.rating}/5 من زبونك",
+            review_text or "تم تقييم رحلتك",
+            {"type": "rating", "order_id": order_id},
+        )
+    )
+    updated = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {"success": True, "order": updated}
+
+
+# -------------------------------------------------------------------
+# Driver earnings analytics
+# -------------------------------------------------------------------
+@api.get("/driver/earnings/analytics")
+async def driver_earnings_analytics(
+    range_: str = Query("week", alias="range"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Earnings analytics for the logged-in driver.
+
+    range_: "week" (last 7 days), "month" (last 30 days)
+    Returns series + breakdown by status/day.
+    """
+    _require_driver(current_user)
+    now = now_utc()
+    days = 30 if range_ == "month" else 7
+
+    series: list[dict] = []
+    total_revenue = 0
+    total_trips = 0
+    for i in range(days - 1, -1, -1):
+        day = (now - timedelta(days=i)).date().isoformat()
+        next_day = (now - timedelta(days=i - 1)).date().isoformat() if i > 0 else (
+            now + timedelta(days=1)
+        ).date().isoformat()
+        pipeline = [
+            {
+                "$match": {
+                    "driver_id": current_user["id"],
+                    "status": "completed",
+                    "completed_at": {"$gte": day, "$lt": next_day},
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "earnings": {"$sum": "$final_price"},
+                    "trips": {"$sum": 1},
+                }
+            },
+        ]
+        earnings = 0
+        trips = 0
+        async for row in db.orders.aggregate(pipeline):
+            earnings = row.get("earnings", 0) or 0
+            trips = row.get("trips", 0) or 0
+        series.append({"day": day, "earnings": earnings, "trips": trips})
+        total_revenue += earnings
+        total_trips += trips
+
+    # Breakdown by status (all-time for this driver)
+    by_status_pipeline = [
+        {"$match": {"driver_id": current_user["id"]}},
+        {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+    ]
+    by_status: dict[str, int] = {}
+    async for row in db.orders.aggregate(by_status_pipeline):
+        by_status[row["_id"]] = row["count"]
+
+    avg_trip = round(total_revenue / total_trips) if total_trips > 0 else 0
+
+    return {
+        "range": range,
+        "series": series,
+        "totals": {
+            "earnings": total_revenue,
+            "trips": total_trips,
+            "avg_trip_price": avg_trip,
+        },
+        "by_status": by_status,
+        "vehicle_type": current_user.get("vehicle_type"),
+    }
 
 
 # -------------------------------------------------------------------
