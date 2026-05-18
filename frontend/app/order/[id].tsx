@@ -29,6 +29,7 @@ import { formatIQD, formatKm, formatMinutes } from '@/src/utils/format';
 const STATUS_FLOW = ['pending', 'accepted', 'arriving', 'picked_up', 'in_transit', 'completed'];
 
 const STATUS_LABEL: Record<string, string> = {
+  pending_review: 'بانتظار موافقة الإدارة على السعر',
   pending: 'البحث عن سائق...',
   accepted: 'تم قبول الطلب',
   arriving: 'السائق قادم إليك',
@@ -39,6 +40,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const STATUS_SHORT: Record<string, string> = {
+  pending_review: 'مراجعة الإدارة',
   pending: 'قيد الانتظار',
   accepted: 'مقبول',
   arriving: 'قادم',
@@ -70,11 +72,23 @@ export default function OrderTrack() {
     load();
   }, [load]);
 
-  // Auto-simulate driver acceptance after 4 seconds (demo behavior)
+  // Poll for status updates. Also auto-simulate driver acceptance after 4s (demo)
   useEffect(() => {
     if (!order) return;
     if (pollRef.current) clearInterval(pollRef.current);
-    if (order.status === 'pending') {
+
+    // For pending_review: poll every 5s waiting for admin to set price.
+    if (order.status === 'pending_review') {
+      pollRef.current = setInterval(async () => {
+        try {
+          const updated = await getOrder(id as string);
+          if (updated && updated.status !== 'pending_review') {
+            setOrder(updated);
+          }
+        } catch {}
+      }, 5000);
+    } else if (order.status === 'pending') {
+      // Auto-simulate driver acceptance after 4 seconds (demo)
       pollRef.current = setInterval(async () => {
         try {
           const updated = await simulateAccept(id as string);
@@ -126,7 +140,8 @@ export default function OrderTrack() {
 
   const stepIndex = STATUS_FLOW.indexOf(order.status);
   const isActive = !['completed', 'cancelled'].includes(order.status);
-  const canCancel = ['pending', 'accepted'].includes(order.status);
+  const isPendingReview = order.status === 'pending_review';
+  const canCancel = ['pending_review', 'pending', 'accepted'].includes(order.status);
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -170,7 +185,9 @@ export default function OrderTrack() {
             <Text style={styles.statusTitle}>{STATUS_LABEL[order.status]}</Text>
             {isActive && (
               <Text style={styles.statusSub}>
-                {order.status === 'pending'
+                {isPendingReview
+                  ? 'تم إرسال طلبك إلى الإدارة لمراجعة السعر يدوياً. سيتم تحديثك فور التسعير.'
+                  : order.status === 'pending'
                   ? 'جار البحث عن أفضل سائق متاح...'
                   : `الوصول المتوقع خلال ${formatMinutes(order.eta_minutes)}`}
               </Text>
@@ -178,6 +195,18 @@ export default function OrderTrack() {
           </View>
           <StatusBadge status={order.status} label={STATUS_SHORT[order.status] || order.status} />
         </View>
+
+        {isPendingReview && (
+          <View style={styles.manualReviewBox} testID="pending-review-banner">
+            <Ionicons name="hourglass-outline" size={32} color={colors.warning} />
+            <Text style={styles.manualReviewTitle}>تسعير يدوي قيد المراجعة</Text>
+            <Text style={styles.manualReviewText}>
+              مسافة هذا الطلب أكبر من 130 كم، لذا يقوم فريق الإدارة بمراجعة التفاصيل وتحديد
+              السعر النهائي.
+            </Text>
+            <Text style={styles.manualReviewDistance}>{formatKm(order.distance_km)}</Text>
+          </View>
+        )}
 
         {/* Stepper */}
         <View style={styles.stepper}>
@@ -260,7 +289,9 @@ export default function OrderTrack() {
           </View>
           <View style={[styles.priceRow, styles.priceTotal]}>
             <Text style={styles.priceLabelTotal}>المجموع</Text>
-            <Text style={styles.priceValueTotal}>{formatIQD(order.final_price)}</Text>
+            <Text style={styles.priceValueTotal}>
+              {isPendingReview ? 'بانتظار التسعير' : formatIQD(order.final_price)}
+            </Text>
           </View>
         </View>
 
@@ -410,4 +441,27 @@ const styles = StyleSheet.create({
   completedBox: { alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.lg, backgroundColor: 'rgba(52,199,89,0.08)', borderRadius: radius.md, borderWidth: 1, borderColor: 'rgba(52,199,89,0.3)' },
   completedTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '700' },
   completedSub: { color: colors.textSecondary, fontSize: 13 },
+  manualReviewBox: {
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.md,
+    backgroundColor: 'rgba(255,159,10,0.08)',
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.warning,
+  },
+  manualReviewTitle: { color: colors.warning, fontSize: 17, fontWeight: '700' },
+  manualReviewText: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  manualReviewDistance: {
+    color: colors.gold,
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: spacing.xs,
+  },
 });

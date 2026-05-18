@@ -258,11 +258,17 @@ export default function OrderCreate() {
             </View>
           )}
 
-          {/* Live price chip overlay */}
-          {estimate && (
+          {/* Live price chip overlay — hidden for manual-review distances */}
+          {estimate && !estimate.requires_manual_pricing && (
             <View style={styles.priceChip} testID="map-price-chip">
               <Ionicons name="cash" size={14} color={colors.textOnBrand} />
               <Text style={styles.priceChipText}>{formatIQD(estimate.final_price)}</Text>
+            </View>
+          )}
+          {estimate?.requires_manual_pricing && (
+            <View style={styles.manualChip} testID="map-manual-chip">
+              <Ionicons name="warning" size={14} color={colors.textOnBrand} />
+              <Text style={styles.priceChipText}>تسعير يدوي • +130 كم</Text>
             </View>
           )}
         </View>
@@ -336,7 +342,20 @@ export default function OrderCreate() {
           </View>
 
           {/* Price summary */}
-          {estimate ? (
+          {estimate?.requires_manual_pricing ? (
+            <View style={styles.manualBox} testID="manual-pricing-notice">
+              <View style={styles.manualHeader}>
+                <Ionicons name="warning" size={20} color={colors.warning} />
+                <Text style={styles.manualTitle}>تسعير يدوي مطلوب</Text>
+              </View>
+              <Text style={styles.manualText}>
+                طلبات النقل لمسافات تتجاوز 130 كم تتطلب موافقة الإدارة على السعر يدوياً.
+              </Text>
+              <Text style={styles.manualSub}>
+                سيتم إرسال تفاصيل طلبك للإدارة وسيقومون بتحديد السعر النهائي والتواصل معك.
+              </Text>
+            </View>
+          ) : estimate ? (
             <View style={styles.summaryCard}>
               <View style={styles.summaryTop}>
                 <View style={styles.summaryCol}>
@@ -357,6 +376,14 @@ export default function OrderCreate() {
                   <Text style={styles.summaryColValue}>نقداً</Text>
                 </View>
               </View>
+              {estimate.is_capped && (
+                <View style={styles.cappedRow}>
+                  <Ionicons name="information-circle" size={14} color={colors.info} />
+                  <Text style={styles.cappedText}>
+                    تم تطبيق السعر الأقصى للمسافات الطويلة (75 كم+)
+                  </Text>
+                </View>
+              )}
               <View style={styles.totalRow}>
                 <Text style={styles.totalLabel}>المبلغ الإجمالي</Text>
                 <Text style={styles.totalValue}>{formatIQD(estimate.final_price)}</Text>
@@ -374,7 +401,7 @@ export default function OrderCreate() {
           {/* Send button — big and bold */}
           <Button
             testID="send-order-btn"
-            label="إرسال الطلب"
+            label={estimate?.requires_manual_pricing ? 'إرسال للمراجعة' : 'إرسال الطلب'}
             onPress={handleSend}
             loading={submitting || loadingEstimate}
             disabled={!canSubmit}
@@ -489,7 +516,44 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     ...shadows.button,
   },
+  manualChip: {
+    position: 'absolute',
+    top: spacing.md + 56 + spacing.sm,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.warning,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+    ...shadows.button,
+  },
   priceChipText: { color: colors.textOnBrand, fontWeight: '700', fontSize: 14 },
+
+  manualBox: {
+    backgroundColor: 'rgba(255,159,10,0.08)',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1.5,
+    borderColor: colors.warning,
+    gap: spacing.sm,
+  },
+  manualHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  manualTitle: { color: colors.warning, fontWeight: '700', fontSize: 16 },
+  manualText: { color: colors.textPrimary, fontSize: 14, lineHeight: 22, fontWeight: '600' },
+  manualSub: { color: colors.textSecondary, fontSize: 13, lineHeight: 20 },
+
+  cappedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
+    backgroundColor: 'rgba(10,132,255,0.08)',
+    borderRadius: radius.sm,
+  },
+  cappedText: { color: colors.info, fontSize: 12, fontWeight: '600' },
 
   // SHEET
   sheet: {

@@ -1,0 +1,37 @@
+{
+  "summary": "NAQAL GO iteration 4 (long-distance pricing cap + manual review + admin endpoints) — ALL 15 review-request items PASS. Backend: 16/16 new tests in /app/backend/tests/test_iteration4_pricing.py pass. Frontend: /order/create correctly shows the manual-pricing-notice + map-manual-chip and send button label 'إرسال للمراجعة' at >130km, the summaryCard with capped row + price chip 75,000 د.ع at 75–130km, and normal price (21,500 د.ع) at 10km. /order/[id] code-review confirms pending-review-banner, 'بانتظار التسعير' label, and 5s getOrder polling (NOT simulate-accept).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All", "issues": ["Pre-existing cosmetic warnings: 'shadow*' style props deprecated, suggest 'boxShadow'."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4_pricing.py",
+    "/app/backend/tests/test_naqalgo_api.py",
+    "/app/test_reports/pytest/iteration4_results.xml"
+  ],
+  "verification_details": {
+    "backend_pytest": "16 passed in 7.20s (pricing/config keys, estimate <75/75-130/>130, order creation all 3 ranges, admin pending-review auth gates 401/403/200, admin filter, set-price success/too-low/non-pending-review/customer-403, admin reject sets cancelled+reason)",
+    "frontend_manual_review_>130km": "manual-pricing-notice=1, map-manual-chip=1, map-price-chip=0, send label='إرسال للمراجعة', summary card 'المبلغ الإجمالي' absent",
+    "frontend_capped_75_130km": "price-chip text '75,000 د.ع', body contains 'السعر الأقصى' and '75 كم+', send label='إرسال الطلب'",
+    "frontend_normal_<75km": "price-chip '21,500 د.ع', no manual notice, no capped row",
+    "tracking_pending_review_code_review": "STATUS_LABEL['pending_review']='بانتظار موافقة الإدارة على السعر', manualReviewBox rendered with testID=pending-review-banner, priceValueTotal shows 'بانتظار التسعير' when isPendingReview, pollRef uses getOrder every 5s for pending_review (simulateAccept only fires for status=='pending')"
+  },
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py calculate_price() correctly caps at 75,000 when distance >= 75km, and pricing_estimate returns early with requires_manual_pricing=true when road_distance > 130km. create_order mirrors the logic and stores status='pending_review' + final_price=0.",
+    "_require_admin gate on /admin/* is consistent: 401 for missing token, 403 for non-admin user_type. set-price validates price >= min_price (5000) and rejects non-pending_review orders.",
+    "create.tsx correctly hides summaryCard when estimate.requires_manual_pricing and shows manualBox + manualChip + 'إرسال للمراجعة' label.",
+    "[id].tsx uses getOrder polling (not simulate-accept) when status==='pending_review', preventing the 4s auto-driver-assignment from firing on long-distance orders."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "16/16 = 100%", "frontend": "15/15 review items = 100%" },
+  "seed_data_creation": "Used phone +9647700009977 (TEST_Iter4_Customer). Test created several pending_review orders (~150–170km) and one was priced manually to 95000 IQD; another rejected. Old short/capped orders remain in DB for audit.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 4 pricing policy is FULLY working backend+frontend. Pricing thresholds: cap at >=75km -> 75,000 IQD; manual review at >130km. Admin endpoints: GET /api/admin/orders/pending-review, GET /api/admin/orders?status=..., POST /api/admin/orders/{id}/set-price {price, note}, POST /api/admin/orders/{id}/reject. To bypass map in playwright on web, dispatch: window.postMessage(JSON.stringify({type:'marker', mode:'pickup'|'dropoff', latitude, longitude}), '*'). Note: the MapPicker handler expects keys 'latitude'/'longitude' NOT 'lat'/'lng'."
+}

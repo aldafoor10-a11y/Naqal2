@@ -190,6 +190,10 @@ PRICING = {
     },
     "peak_hours": [(7, 9), (17, 20)],  # local time in 24h
     "peak_multiplier": 1.15,
+    # Long-distance policy
+    "max_auto_price": 75000,          # cap for automatic pricing (IQD)
+    "auto_cap_distance_km": 75,       # at and above this distance, final price is capped
+    "manual_review_distance_km": 130, # above this, manager must set the price manually
 }
 
 VEHICLE_RECOMMENDATION = {
@@ -255,12 +259,19 @@ def calculate_price(distance_km: float, vehicle_type: str) -> dict:
     # Round to nearest 500
     final = int(round(final / 500.0) * 500)
 
+    # Long-distance cap: at and above 75km, total price stops increasing.
+    capped = False
+    if distance_km >= PRICING["auto_cap_distance_km"] and final > PRICING["max_auto_price"]:
+        final = PRICING["max_auto_price"]
+        capped = True
+
     return {
         "base_price": int(base),
         "vehicle_multiplier": vmult,
         "is_peak": is_peak,
         "peak_multiplier": PRICING["peak_multiplier"] if is_peak else 1.0,
         "final_price": final,
+        "is_capped": capped,
         "currency": "IQD",
         "breakdown": breakdown,
     }
@@ -395,15 +406,33 @@ async def pricing_estimate(req: PriceEstimateRequest):
     distance = haversine_km(req.pickup_lat, req.pickup_lng, req.dropoff_lat, req.dropoff_lng)
     # Add 20% for road network factor
     road_distance = distance * 1.2
-    price = calculate_price(road_distance, req.vehicle_type)
     eta_min = estimate_distance_minutes(road_distance)
     recommended = VEHICLE_RECOMMENDATION.get(req.service_type or "", "kia_pickup")
+
+    # Long-distance: requires manual manager approval. Don't compute an automatic price.
+    if road_distance > PRICING["manual_review_distance_km"]:
+        return {
+            "distance_km": round(road_distance, 2),
+            "straight_km": round(distance, 2),
+            "eta_minutes": eta_min,
+            "vehicle_type": req.vehicle_type,
+            "recommended_vehicle": recommended,
+            "requires_manual_pricing": True,
+            "manual_review_threshold_km": PRICING["manual_review_distance_km"],
+            "final_price": None,
+            "is_capped": False,
+            "currency": "IQD",
+            "message": "Long-distance orders above 130 KM require manual pricing approval from management.",
+        }
+
+    price = calculate_price(road_distance, req.vehicle_type)
     return {
         "distance_km": round(road_distance, 2),
         "straight_km": round(distance, 2),
         "eta_minutes": eta_min,
         "vehicle_type": req.vehicle_type,
         "recommended_vehicle": recommended,
+        "requires_manual_pricing": False,
         **price,
     }
 
@@ -420,6 +449,9 @@ async def pricing_config():
         ],
         "vehicle_multipliers": PRICING["vehicle_multiplier"],
         "peak_multiplier": PRICING["peak_multiplier"],
+        "max_auto_price": PRICING["max_auto_price"],
+        "auto_cap_distance_km": PRICING["auto_cap_distance_km"],
+        "manual_review_distance_km": PRICING["manual_review_distance_km"],
         "currency": "IQD",
     }
 
@@ -435,8 +467,28 @@ async def create_order(req: CreateOrderRequest, current_user: dict = Depends(get
     distance = haversine_km(
         req.pickup.latitude, req.pickup.longitude, req.dropoff.latitude, req.dropoff.longitude
     ) * 1.2
-    price = calculate_price(distance, req.vehicle_type)
     eta_min = estimate_distance_minutes(distance)
+
+    # Long-distance: requires manual manager pricing approval.
+    requires_manual = distance > PRICING["manual_review_distance_km"]
+
+    if requires_manual:
+        final_price = 0
+        base_price = 0
+        vmult = PRICING["vehicle_multiplier"].get(req.vehicle_type, 1.0)
+        peak_mult = 1.0
+        is_peak = False
+        is_capped = False
+        status = "pending_review"
+    else:
+        price = calculate_price(distance, req.vehicle_type)
+        final_price = price["final_price"]
+        base_price = price["base_price"]
+        vmult = price["vehicle_multiplier"]
+        peak_mult = price["peak_multiplier"]
+        is_peak = price["is_peak"]
+        is_capped = price["is_capped"]
+        status = "pending"
 
     order = {
         "id": make_id(),
@@ -453,17 +505,21 @@ async def create_order(req: CreateOrderRequest, current_user: dict = Depends(get
         "dropoff": req.dropoff.dict(),
         "distance_km": round(distance, 2),
         "eta_minutes": eta_min,
-        "base_price": price["base_price"],
-        "vehicle_multiplier": price["vehicle_multiplier"],
-        "peak_multiplier": price["peak_multiplier"],
-        "is_peak": price["is_peak"],
-        "final_price": price["final_price"],
+        "base_price": base_price,
+        "vehicle_multiplier": vmult,
+        "peak_multiplier": peak_mult,
+        "is_peak": is_peak,
+        "is_capped": is_capped,
+        "final_price": final_price,
+        "requires_manual_pricing": requires_manual,
+        "manual_price_set_by": None,
+        "manual_price_set_at": None,
         "currency": "IQD",
         "cargo_description": req.cargo_description,
         "cargo_notes": req.cargo_notes or "",
         "cargo_images": req.cargo_images or [],
-        "status": "pending",
-        "status_history": [{"status": "pending", "at": now_utc().isoformat()}],
+        "status": status,
+        "status_history": [{"status": status, "at": now_utc().isoformat()}],
         "payment_method": "cash",
         "rating": None,
         "rating_comment": None,
@@ -479,6 +535,11 @@ async def create_order(req: CreateOrderRequest, current_user: dict = Depends(get
 
     # Increment user total orders
     await db.users.update_one({"id": current_user["id"]}, {"$inc": {"total_orders": 1}})
+
+    if requires_manual:
+        logger.info(
+            f"[MANUAL REVIEW] Order {order['order_number']} ({round(distance,1)}km) sent to admin for pricing approval"
+        )
     return {"success": True, "order": order}
 
 
@@ -555,7 +616,102 @@ async def rate_order(
 
 
 # -------------------------------------------------------------------
-# Mock driver assignment (for demo - auto-assigns after 5 sec via simulation endpoint)
+# Admin endpoints (manual pricing review)
+# -------------------------------------------------------------------
+class SetManualPriceRequest(BaseModel):
+    price: int
+    note: Optional[str] = ""
+
+
+def _require_admin(user: dict) -> None:
+    if user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@api.get("/admin/orders/pending-review")
+async def admin_list_pending_review(current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    cursor = (
+        db.orders.find({"status": "pending_review"}, {"_id": 0})
+        .sort("created_at", -1)
+        .limit(200)
+    )
+    orders = await cursor.to_list(length=200)
+    return {"orders": orders, "count": len(orders)}
+
+
+@api.get("/admin/orders")
+async def admin_list_orders(
+    status: Optional[str] = None,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    query: dict = {}
+    if status:
+        query["status"] = status
+    cursor = db.orders.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    orders = await cursor.to_list(length=limit)
+    return {"orders": orders, "count": len(orders)}
+
+
+@api.post("/admin/orders/{order_id}/set-price")
+async def admin_set_manual_price(
+    order_id: str,
+    req: SetManualPriceRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    if req.price < PRICING["min_price"]:
+        raise HTTPException(
+            status_code=400, detail=f"Price must be at least {PRICING['min_price']} IQD"
+        )
+    order = await db.orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order["status"] not in ("pending_review",):
+        raise HTTPException(
+            status_code=400, detail="Only pending_review orders can be priced manually"
+        )
+    await db.orders.update_one(
+        {"id": order_id},
+        {
+            "$set": {
+                "final_price": req.price,
+                "manual_price_set_by": current_user.get("username", "admin"),
+                "manual_price_set_at": now_utc().isoformat(),
+                "manual_price_note": req.note or "",
+                "status": "pending",
+                "updated_at": now_utc().isoformat(),
+            },
+            "$push": {"status_history": {"status": "pending", "at": now_utc().isoformat()}},
+        },
+    )
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {"success": True, "order": order}
+
+
+@api.post("/admin/orders/{order_id}/reject")
+async def admin_reject_order(order_id: str, current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    order = await db.orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    await db.orders.update_one(
+        {"id": order_id},
+        {
+            "$set": {
+                "status": "cancelled",
+                "cancelled_at": now_utc().isoformat(),
+                "updated_at": now_utc().isoformat(),
+                "cancellation_reason": "Rejected by admin",
+            },
+            "$push": {"status_history": {"status": "cancelled", "at": now_utc().isoformat()}},
+        },
+    )
+    return {"success": True}
+
+
 # -------------------------------------------------------------------
 @api.post("/orders/{order_id}/simulate-accept")
 async def simulate_accept(order_id: str, current_user: dict = Depends(get_current_user)):
