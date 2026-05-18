@@ -278,9 +278,54 @@ def calculate_price(distance_km: float, vehicle_type: str) -> dict:
 
 
 # -------------------------------------------------------------------
-# OTP Storage (in-memory, mock - accepts "123456" universally)
+# OTP / Twilio integration
 # -------------------------------------------------------------------
 MOCK_OTP = "123456"
+
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
+TWILIO_ENABLED = bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER)
+
+_twilio_client = None
+if TWILIO_ENABLED:
+    try:
+        from twilio.rest import Client as _TwilioClient  # type: ignore
+        _twilio_client = _TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("Twilio SMS enabled")
+    except Exception as exc:  # pragma: no cover
+        logger.error(f"Twilio init failed, falling back to mock OTP: {exc}")
+        TWILIO_ENABLED = False
+        _twilio_client = None
+
+
+def _generate_otp_code() -> str:
+    """Generate a 6-digit numeric OTP."""
+    return "".join(random.choices(string.digits, k=6))
+
+
+async def _send_otp_sms(phone: str, code: str) -> bool:
+    """Send an OTP via Twilio. Returns True on success, False on failure.
+
+    In mock mode (Twilio not configured), this is a no-op and returns True
+    so the caller can proceed; the code is logged to the server console.
+    """
+    if not TWILIO_ENABLED or _twilio_client is None:
+        return True
+    try:
+        body = f"NAQAL GO - رمز التحقق: {code}\nصالح لمدة 10 دقائق."
+        # Twilio is synchronous; offload to threadpool to avoid blocking loop.
+        import asyncio
+        await asyncio.to_thread(
+            _twilio_client.messages.create,
+            body=body,
+            from_=TWILIO_PHONE_NUMBER,
+            to=phone,
+        )
+        return True
+    except Exception as exc:
+        logger.error(f"Twilio send failed for {phone}: {exc}")
+        return False
 
 
 # -------------------------------------------------------------------
