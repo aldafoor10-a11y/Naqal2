@@ -214,7 +214,7 @@ backend:
     file: "/app/backend/server.py, /app/frontend/src/realtime/socket.ts"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: true
           agent: "main"
@@ -240,6 +240,69 @@ backend:
                 unsubscribeOrder helpers; disconnectSocket() called on signOut.
               - Driver job screen openNavigation now offers Waze (preferred) ↔ Apple/Google Maps
                 fallback. Mobile prompts user via Alert; web opens Waze directly.
+        - working: true
+          agent: "testing"
+          comment: |
+            Re-tested over public ingress with python-socketio AsyncClient. Test file: /app/admin_socket_test.py (24/24 passing).
+            Customer (+9647700009999, name "Socket Test") logged in, driver (+9647701234567) logged in + set is_online=true.
+            ✅ Customer socket connected at wss://naqal-go.preview.emergentagent.com/api/socket.io (websocket transport, sid cyaABdgrpzliq1SwAAAB). Backend logs confirm [socket] connected user=<customer_id> type=customer.
+            ✅ Customer POST /api/orders Mosul→Mosul (distance_km=4.19, final_price=10500, status=pending). subscribe_order ack {ok:true, room:"order:<id>"}.
+            ✅ Driver POST /api/driver/orders/{id}/accept → customer socket received order_update with order.status="accepted" in <1s.
+            ✅ Driver PUT /api/driver/location {lat:36.35, lng:43.15} → customer received "driver_location" event with same lat/lng in <1s.
+            ✅ Driver status progression arriving→picked_up→in_transit→completed → 4 additional order_update events, each carrying the correct new status.
+            ✅ GET /api/orders/{id} (customer) → status=completed, driver_location={lat:36.35, lng:43.15}.
+            No critical issues. WebSocket ingress, JWT auth, room routing, and event payloads all working as designed.
+
+
+  - task: "Web Admin Panel (Vite SPA mounted at /api/web-admin/*) + /api/admin/stats analytics endpoint"
+    implemented: true
+    working: true
+    file: "/app/admin/* (built to /app/admin/dist), /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Built a separate Vite React + TS + Tailwind SPA in /app/admin (yarn build → /app/admin/dist).
+            Mounted in FastAPI:
+              GET /api/web-admin/            → dist/index.html
+              GET /api/web-admin/{path}      → SPA fallback (or real file)
+              GET /api/web-admin/assets/*    → StaticFiles
+            Pages: Login, Dashboard (analytics w/ 7-day bar+line charts via recharts),
+            Pricing Review (manual price queue with set-price / reject), Drivers (table +
+            online dot + approve toggle + create-driver modal), Orders (filterable),
+            Support Inbox (live poll 5s) + TicketChat.
+            New backend endpoint GET /api/admin/stats returns totals (orders/drivers/
+            online_drivers/completed/revenue/open_tickets), pipeline (pending_review/pending/active),
+            today + week aggregates, and series_7d (7-day orders + revenue).
+            Auth: existing /api/auth/admin/login (admin/naqal2026); all admin/* require _require_admin.
+            Local verified: stats endpoint returns full JSON; SPA & assets reachable via public ingress
+            at https://naqal-go.preview.emergentagent.com/api/web-admin/.
+        - working: true
+          agent: "testing"
+          comment: |
+            Verified via public ingress (https://naqal-go.preview.emergentagent.com). Test file: /app/admin_socket_test.py — 24/24 passing.
+            PART A — /api/admin/stats:
+              ✅ POST /auth/admin/login admin/naqal2026 → 200 + token.
+              ✅ GET /admin/stats with admin Bearer → 200. Shape verified:
+                  totals.{orders:17, drivers:5, online_drivers:1, completed:?, revenue:67500, open_tickets:?}
+                  pipeline.{pending_review, pending, active} all int
+                  today.{orders_completed, revenue}, week.{orders_completed, revenue} all int/number
+                  series_7d: list length 7, each item {day:"YYYY-MM-DD", orders:int, revenue:number}; days strictly ascending (first day '2026-05-12').
+              ✅ GET /admin/stats no token → 401.
+              ✅ GET /admin/stats with CUSTOMER token (+9647700009999) → 403.
+              ✅ GET /admin/stats with DRIVER token (+9647701234567) → 403.
+            PART B — Admin SPA:
+              ✅ GET /api/web-admin/ → 200, content-type text/html, body contains <div id="root">.
+              ✅ GET /api/web-admin/anything-random-XXXXXX → 200, text/html (SPA fallback).
+              ✅ GET /api/web-admin/assets/index-C67c-XhE.js → 200, content-type text/javascript; charset=utf-8. CSS asset (index-b3YlglpI.css) also reachable in earlier ingress logs.
+            PART D — auth-guard regression:
+              ✅ Customer → GET /admin/orders → 403.
+              ✅ Driver → POST /admin/drivers → 403.
+              ✅ POST /auth/admin/login with wrong password → 401.
+            No critical issues found.
 
 
 
@@ -366,3 +429,33 @@ agent_communication:
         ✅ Edge cases: empty subject → 400, empty message → 400, GET nonexistent → 404.
 
         No critical issues. No mocked integrations. Support tickets feature ready.
+    - agent: "testing"
+      message: |
+        Web Admin Panel + Socket.IO real-time re-test complete via public ingress
+        (https://naqal-go.preview.emergentagent.com). Test file: /app/admin_socket_test.py — 24/24 PASS.
+
+        PART A — /api/admin/stats:
+          ✅ Admin login admin/naqal2026 → token.
+          ✅ GET /admin/stats (admin) → 200 with full shape: totals.{orders:17,drivers:5,online_drivers:1,completed,revenue:67500,open_tickets}, pipeline.{pending_review,pending,active}, today.{orders_completed,revenue}, week.{orders_completed,revenue}, series_7d list of 7 items {day:YYYY-MM-DD,orders,revenue} in ascending order (first day 2026-05-12).
+          ✅ /admin/stats no token → 401; customer token → 403; driver token → 403.
+
+        PART B — Admin SPA at /api/web-admin/:
+          ✅ GET /api/web-admin/ → 200 text/html with <div id="root">.
+          ✅ GET /api/web-admin/anything-random-XXXXXX → 200 text/html (SPA fallback).
+          ✅ GET /api/web-admin/assets/index-C67c-XhE.js → 200 text/javascript.
+
+        PART C — Driver E2E with Socket.IO (python-socketio AsyncClient):
+          ✅ Customer (+9647700009999, name "Socket Test") + driver (+9647701234567, is_online=true) authenticated.
+          ✅ Customer socket connected to wss://.../api/socket.io (websocket transport), backend logs confirm [socket] connected user=<id> type=customer; sid returned.
+          ✅ Customer creates Mosul→Mosul order (distance_km=4.19, price=10,500 IQD, status=pending). subscribe_order ack {ok:true, room:"order:<id>"}.
+          ✅ Driver accept → customer received order_update {order.status:"accepted"} within <1s.
+          ✅ Driver PUT /driver/location {36.35, 43.15} → customer received "driver_location" with same lat/lng within <1s.
+          ✅ Driver progression arriving→picked_up→in_transit→completed → customer received 4 more order_update events with correct statuses in order.
+          ✅ GET /api/orders/{id} (customer) → status=completed, driver_location={36.35,43.15}.
+
+        PART D — Auth-guard regression:
+          ✅ Customer→GET /admin/orders → 403.
+          ✅ Driver→POST /admin/drivers → 403.
+          ✅ Admin login wrong password → 401.
+
+        No critical issues. No mocked integrations. needs_retesting flipped to false on both target tasks.

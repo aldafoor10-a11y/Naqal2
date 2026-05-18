@@ -18,6 +18,8 @@ import jwt
 import socketio
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -1408,6 +1410,94 @@ async def add_ticket_message(
     return {"success": True, "ticket": ticket, "message": msg}
 
 
+@api.get("/admin/stats")
+async def admin_stats(current_user: dict = Depends(get_current_user)):
+    """Aggregate dashboard analytics for admin."""
+    _require_admin(current_user)
+    now = now_utc()
+    today_iso = now.date().isoformat()
+    week_ago = (now - timedelta(days=7)).isoformat()
+    month_ago = (now - timedelta(days=30)).isoformat()
+
+    # Totals
+    total_orders = await db.orders.count_documents({})
+    total_drivers = await db.users.count_documents({"user_type": "driver"})
+    online_drivers = await db.users.count_documents({"user_type": "driver", "is_online": True})
+    pending_review = await db.orders.count_documents({"status": "pending_review"})
+    pending = await db.orders.count_documents({"status": "pending"})
+    active = await db.orders.count_documents(
+        {"status": {"$in": ["accepted", "arriving", "picked_up", "in_transit"]}}
+    )
+    completed_total = await db.orders.count_documents({"status": "completed"})
+    open_tickets = await db.support_tickets.count_documents({"status": {"$in": ["open", "pending"]}})
+
+    # Revenue (sum of final_price for completed orders)
+    rev_pipeline = [
+        {"$match": {"status": "completed"}},
+        {"$group": {"_id": None, "total": {"$sum": "$final_price"}}},
+    ]
+    revenue_total = 0
+    async for row in db.orders.aggregate(rev_pipeline):
+        revenue_total = row.get("total", 0)
+
+    today_done = await db.orders.count_documents(
+        {"status": "completed", "completed_at": {"$gte": today_iso}}
+    )
+    week_done = await db.orders.count_documents(
+        {"status": "completed", "completed_at": {"$gte": week_ago}}
+    )
+
+    rev_today_p = [
+        {"$match": {"status": "completed", "completed_at": {"$gte": today_iso}}},
+        {"$group": {"_id": None, "total": {"$sum": "$final_price"}}},
+    ]
+    rev_today = 0
+    async for row in db.orders.aggregate(rev_today_p):
+        rev_today = row.get("total", 0)
+
+    rev_week_p = [
+        {"$match": {"status": "completed", "completed_at": {"$gte": week_ago}}},
+        {"$group": {"_id": None, "total": {"$sum": "$final_price"}}},
+    ]
+    rev_week = 0
+    async for row in db.orders.aggregate(rev_week_p):
+        rev_week = row.get("total", 0)
+
+    # Orders per day (last 7 days) - approximate by created_at string prefix
+    series: list[dict] = []
+    for i in range(6, -1, -1):
+        day = (now - timedelta(days=i)).date().isoformat()
+        next_day = (now - timedelta(days=i - 1)).date().isoformat() if i > 0 else (now + timedelta(days=1)).date().isoformat()
+        cnt = await db.orders.count_documents({"created_at": {"$gte": day, "$lt": next_day}})
+        rev_p = [
+            {"$match": {"status": "completed", "completed_at": {"$gte": day, "$lt": next_day}}},
+            {"$group": {"_id": None, "total": {"$sum": "$final_price"}}},
+        ]
+        rev = 0
+        async for row in db.orders.aggregate(rev_p):
+            rev = row.get("total", 0)
+        series.append({"day": day, "orders": cnt, "revenue": rev})
+
+    return {
+        "totals": {
+            "orders": total_orders,
+            "drivers": total_drivers,
+            "online_drivers": online_drivers,
+            "completed": completed_total,
+            "revenue": revenue_total,
+            "open_tickets": open_tickets,
+        },
+        "pipeline": {
+            "pending_review": pending_review,
+            "pending": pending,
+            "active": active,
+        },
+        "today": {"orders_completed": today_done, "revenue": rev_today},
+        "week": {"orders_completed": week_done, "revenue": rev_week},
+        "series_7d": series,
+    }
+
+
 @api.get("/admin/support/tickets")
 async def admin_list_tickets(
     status: Optional[str] = None,
@@ -1537,6 +1627,30 @@ async def shutdown_db():
 # Register
 # -------------------------------------------------------------------
 app.include_router(api)
+
+# Web Admin Panel — serve built Vite SPA from /api/web-admin/*
+ADMIN_DIST = Path("/app/admin/dist")
+if ADMIN_DIST.exists() and (ADMIN_DIST / "index.html").exists():
+    # /api/web-admin/assets/* and other built files
+    app.mount(
+        "/api/web-admin/assets",
+        StaticFiles(directory=str(ADMIN_DIST / "assets")),
+        name="admin-assets",
+    )
+
+    @app.get("/api/web-admin")
+    @app.get("/api/web-admin/")
+    async def admin_root():
+        return FileResponse(str(ADMIN_DIST / "index.html"))
+
+    @app.get("/api/web-admin/{full_path:path}")
+    async def admin_spa(full_path: str):
+        # First try a real file on disk (favicon, etc.)
+        candidate = ADMIN_DIST / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        # Fall back to SPA index for client-side routing
+        return FileResponse(str(ADMIN_DIST / "index.html"))
 
 app.add_middleware(
     CORSMiddleware,
