@@ -305,13 +305,16 @@ async def send_otp(req: SendOtpRequest):
     phone = normalize_phone(req.phone)
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number")
-    # In mock mode, simulate sending. Store record for tracking.
+
+    # Generate code: random when Twilio is active, fixed mock otherwise.
+    code = _generate_otp_code() if TWILIO_ENABLED else MOCK_OTP
+
     await db.otp_sessions.update_one(
         {"phone": phone},
         {
             "$set": {
                 "phone": phone,
-                "code": MOCK_OTP,
+                "code": code,
                 "expires_at": (now_utc() + timedelta(minutes=10)).isoformat(),
                 "attempts": 0,
                 "sent_at": now_utc().isoformat(),
@@ -319,8 +322,20 @@ async def send_otp(req: SendOtpRequest):
         },
         upsert=True,
     )
-    logger.info(f"[MOCK OTP] Sent to {phone} (code: {MOCK_OTP})")
-    return {"success": True, "message": "OTP sent", "phone": phone, "mock_code": MOCK_OTP}
+
+    sms_sent = await _send_otp_sms(phone, code)
+    if TWILIO_ENABLED and not sms_sent:
+        # Real SMS failed — surface error to caller.
+        raise HTTPException(status_code=502, detail="Could not send verification SMS")
+
+    if not TWILIO_ENABLED:
+        logger.info(f"[MOCK OTP] Sent to {phone} (code: {code})")
+
+    response = {"success": True, "message": "OTP sent", "phone": phone}
+    # Only expose code in mock mode for developer convenience
+    if not TWILIO_ENABLED:
+        response["mock_code"] = code
+    return response
 
 
 @api.post("/auth/verify-otp")
@@ -329,14 +344,21 @@ async def verify_otp(req: VerifyOtpRequest):
     session = await db.otp_sessions.find_one({"phone": phone}, {"_id": 0})
     if not session:
         raise HTTPException(status_code=400, detail="No OTP session found. Request a new code.")
-    if req.code != MOCK_OTP and req.code != session.get("code"):
+
+    # Accept either the session's actual code OR the literal mock code when Twilio is off.
+    valid_code = req.code == session.get("code") or (
+        not TWILIO_ENABLED and req.code == MOCK_OTP
+    )
+    if not valid_code:
         await db.otp_sessions.update_one({"phone": phone}, {"$inc": {"attempts": 1}})
         raise HTTPException(status_code=400, detail="Invalid verification code")
 
-    # Find or create user
+    # Look up user. Drivers are pre-created by admin — they may or may not be approved.
     user = await db.users.find_one({"phone": phone}, {"_id": 0})
     is_new = False
     if not user:
+        # No pre-existing user — auto-create as CUSTOMER only.
+        # Drivers cannot register themselves.
         is_new = True
         user = {
             "id": make_id(),
@@ -350,10 +372,16 @@ async def verify_otp(req: VerifyOtpRequest):
             "created_at": now_utc().isoformat(),
         }
         await db.users.insert_one(user.copy())
-        # Remove _id which MongoDB added by reference
         user.pop("_id", None)
+    else:
+        # Existing driver: ensure they are approved & active.
+        if user.get("user_type") == "driver" and not user.get("is_approved", False):
+            raise HTTPException(
+                status_code=403,
+                detail="حساب السائق لم تتم الموافقة عليه من قبل الإدارة بعد",
+            )
 
-    # Cleanup OTP
+    # Cleanup OTP session
     await db.otp_sessions.delete_one({"phone": phone})
 
     token = create_jwt(user["id"], user.get("user_type", "customer"))
@@ -361,6 +389,7 @@ async def verify_otp(req: VerifyOtpRequest):
         "success": True,
         "is_new_user": is_new,
         "needs_name": is_new or not user.get("name"),
+        "user_type": user.get("user_type", "customer"),
         "token": token,
         "user": user,
     }
@@ -612,6 +641,341 @@ async def rate_order(
         {"id": order_id},
         {"$set": {"rating": rating, "rating_comment": comment, "updated_at": now_utc().isoformat()}},
     )
+    return {"success": True}
+
+
+# -------------------------------------------------------------------
+# Driver endpoints
+# -------------------------------------------------------------------
+class DriverStatusRequest(BaseModel):
+    is_online: bool
+
+
+class DriverLocationRequest(BaseModel):
+    latitude: float
+    longitude: float
+
+
+class DriverOrderStatusRequest(BaseModel):
+    status: Literal["arriving", "picked_up", "in_transit", "completed"]
+
+
+def _require_driver(user: dict) -> None:
+    if user.get("user_type") != "driver":
+        raise HTTPException(status_code=403, detail="Driver access required")
+
+
+@api.get("/driver/profile")
+async def driver_profile(current_user: dict = Depends(get_current_user)):
+    _require_driver(current_user)
+    return {"driver": current_user}
+
+
+@api.put("/driver/status")
+async def driver_set_status(
+    req: DriverStatusRequest, current_user: dict = Depends(get_current_user)
+):
+    _require_driver(current_user)
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {
+            "$set": {
+                "is_online": req.is_online,
+                "last_status_change": now_utc().isoformat(),
+                "updated_at": now_utc().isoformat(),
+            }
+        },
+    )
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    return {"success": True, "driver": user}
+
+
+@api.put("/driver/location")
+async def driver_update_location(
+    req: DriverLocationRequest, current_user: dict = Depends(get_current_user)
+):
+    _require_driver(current_user)
+    loc = {"latitude": req.latitude, "longitude": req.longitude}
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {
+            "$set": {
+                "current_location": loc,
+                "location_updated_at": now_utc().isoformat(),
+            }
+        },
+    )
+    # Also propagate to any active orders this driver has
+    await db.orders.update_many(
+        {
+            "driver_id": current_user["id"],
+            "status": {"$in": ["accepted", "arriving", "picked_up", "in_transit"]},
+        },
+        {"$set": {"driver_location": loc, "updated_at": now_utc().isoformat()}},
+    )
+    return {"success": True}
+
+
+@api.get("/driver/orders/available")
+async def driver_available_orders(current_user: dict = Depends(get_current_user)):
+    _require_driver(current_user)
+    if not current_user.get("is_online"):
+        return {"orders": [], "count": 0}
+    cursor = (
+        db.orders.find({"status": "pending", "driver_id": None}, {"_id": 0})
+        .sort("created_at", -1)
+        .limit(30)
+    )
+    orders = await cursor.to_list(length=30)
+    return {"orders": orders, "count": len(orders)}
+
+
+@api.get("/driver/orders/active")
+async def driver_active_orders(current_user: dict = Depends(get_current_user)):
+    _require_driver(current_user)
+    cursor = db.orders.find(
+        {
+            "driver_id": current_user["id"],
+            "status": {"$in": ["accepted", "arriving", "picked_up", "in_transit"]},
+        },
+        {"_id": 0},
+    ).sort("accepted_at", -1)
+    orders = await cursor.to_list(length=10)
+    return {"orders": orders, "count": len(orders)}
+
+
+@api.get("/driver/orders/history")
+async def driver_history(current_user: dict = Depends(get_current_user)):
+    _require_driver(current_user)
+    cursor = (
+        db.orders.find(
+            {"driver_id": current_user["id"], "status": {"$in": ["completed", "cancelled"]}},
+            {"_id": 0},
+        )
+        .sort("created_at", -1)
+        .limit(100)
+    )
+    orders = await cursor.to_list(length=100)
+    return {"orders": orders, "count": len(orders)}
+
+
+@api.post("/driver/orders/{order_id}/accept")
+async def driver_accept_order(
+    order_id: str, current_user: dict = Depends(get_current_user)
+):
+    _require_driver(current_user)
+    if not current_user.get("is_online"):
+        raise HTTPException(status_code=400, detail="يجب أن تكون متصلاً لقبول الطلبات")
+    if not current_user.get("is_approved", False):
+        raise HTTPException(status_code=403, detail="حساب السائق غير معتمد")
+
+    # Atomic claim: only succeed if order still pending and unassigned
+    result = await db.orders.find_one_and_update(
+        {"id": order_id, "status": "pending", "driver_id": None},
+        {
+            "$set": {
+                "driver_id": current_user["id"],
+                "driver_name": current_user.get("name", ""),
+                "driver_phone": current_user.get("phone", ""),
+                "driver_rating": current_user.get("rating", 5.0),
+                "driver_vehicle_plate": current_user.get("vehicle_plate", ""),
+                "driver_vehicle_type": current_user.get("vehicle_type", ""),
+                "driver_location": current_user.get("current_location"),
+                "status": "accepted",
+                "accepted_at": now_utc().isoformat(),
+                "updated_at": now_utc().isoformat(),
+            },
+            "$push": {"status_history": {"status": "accepted", "at": now_utc().isoformat()}},
+        },
+        return_document=True,
+        projection={"_id": 0},
+    )
+    if not result:
+        raise HTTPException(status_code=409, detail="الطلب لم يعد متاحاً")
+    return {"success": True, "order": result}
+
+
+@api.post("/driver/orders/{order_id}/reject")
+async def driver_reject_order(
+    order_id: str, current_user: dict = Depends(get_current_user)
+):
+    _require_driver(current_user)
+    # Track rejection but do not change order — it stays pending for another driver
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$addToSet": {"rejected_by": current_user["id"]}},
+    )
+    return {"success": True}
+
+
+@api.post("/driver/orders/{order_id}/status")
+async def driver_update_status(
+    order_id: str,
+    req: DriverOrderStatusRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _require_driver(current_user)
+    order = await db.orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("driver_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not your order")
+
+    # Validate state transitions
+    valid_next = {
+        "accepted": "arriving",
+        "arriving": "picked_up",
+        "picked_up": "in_transit",
+        "in_transit": "completed",
+    }
+    expected = valid_next.get(order["status"])
+    if expected != req.status:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot move from {order['status']} to {req.status}",
+        )
+
+    update = {
+        "$set": {"status": req.status, "updated_at": now_utc().isoformat()},
+        "$push": {"status_history": {"status": req.status, "at": now_utc().isoformat()}},
+    }
+    if req.status == "picked_up":
+        update["$set"]["started_at"] = now_utc().isoformat()
+    if req.status == "completed":
+        update["$set"]["completed_at"] = now_utc().isoformat()
+        # Credit earnings to driver
+        await db.users.update_one(
+            {"id": current_user["id"]},
+            {
+                "$inc": {
+                    "total_earnings": int(order.get("final_price", 0) or 0),
+                    "completed_orders": 1,
+                }
+            },
+        )
+
+    await db.orders.update_one({"id": order_id}, update)
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {"success": True, "order": order}
+
+
+@api.get("/driver/earnings")
+async def driver_earnings(current_user: dict = Depends(get_current_user)):
+    _require_driver(current_user)
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    # Today's & this-week's completed trips
+    today_iso = now_utc().date().isoformat()
+    week_start = (now_utc() - timedelta(days=7)).isoformat()
+    today_cursor = db.orders.find(
+        {
+            "driver_id": current_user["id"],
+            "status": "completed",
+            "completed_at": {"$gte": today_iso},
+        },
+        {"_id": 0},
+    )
+    today_orders = await today_cursor.to_list(length=100)
+    week_cursor = db.orders.find(
+        {
+            "driver_id": current_user["id"],
+            "status": "completed",
+            "completed_at": {"$gte": week_start},
+        },
+        {"_id": 0},
+    )
+    week_orders = await week_cursor.to_list(length=200)
+
+    today_total = sum(int(o.get("final_price", 0) or 0) for o in today_orders)
+    week_total = sum(int(o.get("final_price", 0) or 0) for o in week_orders)
+    return {
+        "today_earnings": today_total,
+        "today_trips": len(today_orders),
+        "week_earnings": week_total,
+        "week_trips": len(week_orders),
+        "total_earnings": int(user.get("total_earnings", 0) or 0),
+        "total_trips": int(user.get("completed_orders", 0) or 0),
+        "rating": user.get("rating", 5.0),
+    }
+
+
+# -------------------------------------------------------------------
+# Admin: Driver management
+# -------------------------------------------------------------------
+class AdminCreateDriverRequest(BaseModel):
+    name: str
+    phone: str
+    vehicle_type: Literal["kia_pickup", "pickup_truck", "medium_truck", "large_truck"]
+    vehicle_plate: str
+    license_number: Optional[str] = ""
+
+
+@api.post("/admin/drivers")
+async def admin_create_driver(
+    req: AdminCreateDriverRequest, current_user: dict = Depends(get_current_user)
+):
+    _require_admin(current_user)
+    phone = normalize_phone(req.phone)
+    existing = await db.users.find_one({"phone": phone})
+    if existing:
+        raise HTTPException(
+            status_code=400, detail="A user with this phone number already exists"
+        )
+    driver = {
+        "id": make_id(),
+        "phone": phone,
+        "name": req.name.strip(),
+        "user_type": "driver",
+        "vehicle_type": req.vehicle_type,
+        "vehicle_plate": req.vehicle_plate.strip(),
+        "license_number": req.license_number or "",
+        "rating": 5.0,
+        "completed_orders": 0,
+        "total_earnings": 0,
+        "is_verified": True,
+        "is_approved": True,  # admin-created → auto-approved
+        "is_active": True,
+        "is_online": False,
+        "current_location": None,
+        "created_at": now_utc().isoformat(),
+        "created_by_admin": current_user.get("username", "admin"),
+    }
+    await db.users.insert_one(driver.copy())
+    driver.pop("_id", None)
+    return {"success": True, "driver": driver}
+
+
+@api.get("/admin/drivers")
+async def admin_list_drivers(current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    cursor = db.users.find({"user_type": "driver"}, {"_id": 0}).sort("created_at", -1)
+    drivers = await cursor.to_list(length=500)
+    return {"drivers": drivers, "count": len(drivers)}
+
+
+@api.put("/admin/drivers/{driver_id}/toggle-approval")
+async def admin_toggle_driver_approval(
+    driver_id: str, current_user: dict = Depends(get_current_user)
+):
+    _require_admin(current_user)
+    driver = await db.users.find_one({"id": driver_id, "user_type": "driver"})
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    new_state = not driver.get("is_approved", False)
+    await db.users.update_one(
+        {"id": driver_id},
+        {"$set": {"is_approved": new_state, "updated_at": now_utc().isoformat()}},
+    )
+    return {"success": True, "is_approved": new_state}
+
+
+@api.delete("/admin/drivers/{driver_id}")
+async def admin_delete_driver(
+    driver_id: str, current_user: dict = Depends(get_current_user)
+):
+    _require_admin(current_user)
+    res = await db.users.delete_one({"id": driver_id, "user_type": "driver"})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Driver not found")
     return {"success": True}
 
 

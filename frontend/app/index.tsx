@@ -19,7 +19,8 @@ export default function Index() {
   }
 
   if (!isAuthenticated) return <Redirect href="/(auth)/welcome" />;
-  if (!user?.name) return <Redirect href="/(auth)/register" />;
+  if (!user?.name && user?.user_type === 'customer') return <Redirect href="/(auth)/register" />;
+  if (user?.user_type === 'driver') return <Redirect href="/(driver)" />;
   return <Redirect href="/(tabs)" />;
 }
 

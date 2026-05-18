@@ -49,7 +49,9 @@ export default function Verify() {
     try {
       const res = await verifyOtp(phone as string, c);
       await refresh();
-      if (res.needs_name) {
+      if (res.user_type === 'driver') {
+        router.replace('/(driver)');
+      } else if (res.needs_name) {
         router.replace('/(auth)/register');
       } else {
         router.replace('/(tabs)');

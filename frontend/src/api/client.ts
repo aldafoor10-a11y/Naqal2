@@ -76,6 +76,60 @@ export async function logout() {
   await setToken(null);
 }
 
+// ---- Driver ----
+export async function driverProfile() {
+  const { data } = await api.get('/driver/profile');
+  return data.driver;
+}
+
+export async function driverSetStatus(is_online: boolean) {
+  const { data } = await api.put('/driver/status', { is_online });
+  return data.driver;
+}
+
+export async function driverUpdateLocation(latitude: number, longitude: number) {
+  const { data } = await api.put('/driver/location', { latitude, longitude });
+  return data;
+}
+
+export async function driverAvailableOrders() {
+  const { data } = await api.get('/driver/orders/available');
+  return data.orders;
+}
+
+export async function driverActiveOrders() {
+  const { data } = await api.get('/driver/orders/active');
+  return data.orders;
+}
+
+export async function driverHistory() {
+  const { data } = await api.get('/driver/orders/history');
+  return data.orders;
+}
+
+export async function driverAcceptOrder(orderId: string) {
+  const { data } = await api.post(`/driver/orders/${orderId}/accept`);
+  return data.order;
+}
+
+export async function driverRejectOrder(orderId: string) {
+  const { data } = await api.post(`/driver/orders/${orderId}/reject`);
+  return data;
+}
+
+export async function driverUpdateOrderStatus(
+  orderId: string,
+  status: 'arriving' | 'picked_up' | 'in_transit' | 'completed'
+) {
+  const { data } = await api.post(`/driver/orders/${orderId}/status`, { status });
+  return data.order;
+}
+
+export async function driverEarnings() {
+  const { data } = await api.get('/driver/earnings');
+  return data;
+}
+
 // ---- Pricing ----
 export async function estimatePrice(params: {
   pickup_lat: number;
