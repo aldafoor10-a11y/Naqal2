@@ -173,3 +173,24 @@ export async function simulateProgress(id: string) {
   const { data } = await api.post(`/orders/${id}/simulate-progress`);
   return data.order;
 }
+
+// ---- Support tickets ----
+export async function createTicket(subject: string, message: string) {
+  const { data } = await api.post('/support/tickets', { subject, message });
+  return data.ticket;
+}
+
+export async function listMyTickets() {
+  const { data } = await api.get('/support/tickets');
+  return data.tickets as any[];
+}
+
+export async function getTicket(id: string) {
+  const { data } = await api.get(`/support/tickets/${id}`);
+  return data.ticket;
+}
+
+export async function postTicketMessage(id: string, message: string) {
+  const { data } = await api.post(`/support/tickets/${id}/messages`, { message });
+  return data.ticket;
+}

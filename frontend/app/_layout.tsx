@@ -11,6 +11,7 @@ import { I18nManager, View, StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from '@/src/context/AuthContext';
+import { LocaleProvider } from '@/src/context/LocaleContext';
 import { colors } from '@/src/theme';
 
 // Force RTL for Arabic-default app
@@ -36,27 +37,36 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <AuthProvider>
-          <StatusBar style="light" backgroundColor={colors.appBg} />
-          <View style={styles.root}>
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: colors.appBg },
-                animation: 'fade',
-              }}
-            >
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="(driver)" />
-              <Stack.Screen
-                name="order/create"
-                options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
-              />
-              <Stack.Screen name="order/details" options={{ animation: 'slide_from_right' }} />
-              <Stack.Screen name="order/[id]" options={{ animation: 'slide_from_right' }} />
-            </Stack>
-          </View>
+          <LocaleProvider>
+            <StatusBar style="light" backgroundColor={colors.appBg} />
+            <View style={styles.root}>
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.appBg },
+                  animation: 'fade',
+                }}
+              >
+                <Stack.Screen name="index" />
+                <Stack.Screen name="(auth)" />
+                <Stack.Screen name="(tabs)" />
+                <Stack.Screen name="(driver)" />
+                <Stack.Screen
+                  name="order/create"
+                  options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
+                />
+                <Stack.Screen name="order/details" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="order/[id]" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="settings/language" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="settings/about" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="settings/help" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="settings/edit-profile" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="support/index" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="support/new" options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
+                <Stack.Screen name="support/[id]" options={{ animation: 'slide_from_right' }} />
+              </Stack>
+            </View>
+          </LocaleProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

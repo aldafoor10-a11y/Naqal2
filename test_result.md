@@ -174,6 +174,40 @@ backend:
           agent: "testing"
           comment: "Admin flow fully verified. POST /auth/admin/login admin/naqal2026 → 200 + token. GET /admin/drivers count=3 (seeded + created). POST /admin/drivers (TEST-001, kia_pickup, +9647709876543) → 200, driver auto-approved. Duplicate phone returns 400 'A user with this phone number already exists'. GET /admin/orders returns 15 orders. Customer creates order with dropoff lat 37.6 → distance_km=166.94, status='pending_review', final_price=0. GET /admin/orders/pending-review contains it. POST /admin/orders/{id}/set-price {price:90000} → status='pending', final_price=90000. Pricing estimates verified: ~50km→final_price=65500 (normal), ~100km→is_capped=true & final_price=75000, ~150km→requires_manual_pricing=true & final_price=null. NOTE: /api/pricing/estimate is POST (not GET as worded in review request) — tested as POST and works correctly."
 
+  - task: "Support tickets (customer<->admin chat)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Endpoints added:
+              POST /api/support/tickets  (customer)  -> create ticket with subject + initial msg
+              GET  /api/support/tickets  (customer)  -> list own
+              GET  /api/support/tickets/{id}  (customer|admin)  -> get + auto-clear unread for viewer
+              POST /api/support/tickets/{id}/messages  (customer|admin)  -> append message; reopen on customer reply; flip open→pending on admin reply
+              GET  /api/admin/support/tickets  (admin)  -> list all (optional ?status=)
+              PUT  /api/admin/support/tickets/{id}/status  (admin)  -> open|pending|resolved|closed
+            Local smoke test (urllib) PASS: create→admin reply→status flips to pending→customer reply→admin resolves. Cross-customer access returns 403. Driver blocked from /support/tickets POST (403). Needs re-test by deep_testing_backend_v2 via ingress.
+        - working: true
+          agent: "testing"
+          comment: |
+            Full support-ticket suite verified via public ingress (https://naqal-go.preview.emergentagent.com/api).
+            Test file: /app/support_tickets_test.py — 16/16 passing.
+            ✅ Customer (+9647700001111) creates ticket {subject:"Payment issue", message:"My payment failed but money was deducted"} → 200; ticket.id present, status="open", messages[0].author.role="customer", unread_for_admin=1.
+            ✅ GET /api/support/tickets (customer) → 200, count=1.
+            ✅ Driver (+9647701234567) POST /api/support/tickets → 403. No-token GET /api/support/tickets → 401. Second customer (+9647700002222) GET /api/support/tickets/{other_id} → 403.
+            ✅ Admin (admin/naqal2026) GET /api/admin/support/tickets includes new ticket. Admin POST /api/support/tickets/{id}/messages {"message":"We're investigating"} → 200, status flips open→pending, unread_for_customer=1, messages length=2.
+            ✅ Customer GET /api/support/tickets/{id} → unread_for_customer cleared to 0.
+            ✅ Customer POST /api/support/tickets/{id}/messages {"message":"Thanks"} → 200, messages length=3.
+            ✅ Admin PUT /api/admin/support/tickets/{id}/status {"status":"resolved"} → 200. Subsequent customer reply re-opens (status="open"). Invalid status "foo" → 422 (Pydantic Literal validation). Customer PUT admin status → 403.
+            ✅ Edge cases: empty subject → 400, empty message → 400, GET nonexistent ticket id → 404.
+            No critical issues. All endpoints behave per spec.
+
 frontend:
   - task: "Role-based routing in AuthContext + verify.tsx"
     implemented: true
@@ -248,3 +282,19 @@ agent_communication:
         Minor note (not a bug): review request worded /api/pricing/estimate as GET, but the implementation is POST and works correctly when called as POST.
 
         No critical issues found. No mocked integrations — Twilio is intentionally disabled (env vars blank) so mock OTP 123456 is the documented behavior. All endpoints behave per spec.
+    - agent: "testing"
+      message: |
+        Support tickets endpoint suite verified via public ingress.
+        Test file: /app/support_tickets_test.py — 16/16 passing.
+
+        Covered all 8 scenarios from review:
+        ✅ Customer creates ticket (+9647700001111) → 200 with id, status=open, messages[0].author.role=customer, unread_for_admin=1.
+        ✅ GET /api/support/tickets (customer) → 200, count≥1.
+        ✅ Driver POST /support/tickets → 403. No-token GET /support/tickets → 401. Other customer (+9647700002222) GET someone else's ticket → 403.
+        ✅ Admin login admin/naqal2026. GET /api/admin/support/tickets includes ticket. Admin POST reply → status open→pending, unread_for_customer=1, 2 messages.
+        ✅ Customer GET /api/support/tickets/{id} clears unread_for_customer to 0.
+        ✅ Customer reply → 3 messages.
+        ✅ PUT status=resolved → 200; customer reply re-opens to "open"; invalid status "foo" → 422 (Pydantic Literal); customer PUT admin status → 403.
+        ✅ Edge cases: empty subject → 400, empty message → 400, GET nonexistent → 404.
+
+        No critical issues. No mocked integrations. Support tickets feature ready.

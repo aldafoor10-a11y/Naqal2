@@ -1238,6 +1238,188 @@ async def seed_admin():
         logger.info("Demo driver seeded")
 
 
+# -------------------------------------------------------------------
+# Support tickets (customer <-> admin)
+# -------------------------------------------------------------------
+class CreateTicketRequest(BaseModel):
+    subject: str
+    message: str
+
+
+class AddTicketMessageRequest(BaseModel):
+    message: str
+
+
+class UpdateTicketStatusRequest(BaseModel):
+    status: Literal["open", "pending", "resolved", "closed"]
+
+
+def _ticket_actor(user: dict) -> dict:
+    return {
+        "id": user.get("id"),
+        "name": user.get("name") or user.get("username") or "—",
+        "role": user.get("user_type", "customer"),
+    }
+
+
+@api.post("/support/tickets")
+async def create_ticket(
+    req: CreateTicketRequest, current_user: dict = Depends(get_current_user)
+):
+    if current_user.get("user_type") != "customer":
+        raise HTTPException(status_code=403, detail="Only customers can open support tickets")
+    if not req.subject.strip() or not req.message.strip():
+        raise HTTPException(status_code=400, detail="Subject and message are required")
+    now = now_utc().isoformat()
+    ticket = {
+        "id": make_id(),
+        "customer_id": current_user["id"],
+        "customer_name": current_user.get("name", ""),
+        "customer_phone": current_user.get("phone", ""),
+        "subject": req.subject.strip()[:140],
+        "status": "open",
+        "unread_for_customer": 0,
+        "unread_for_admin": 1,
+        "last_message_preview": req.message.strip()[:120],
+        "last_message_at": now,
+        "messages": [
+            {
+                "id": make_id(),
+                "author": _ticket_actor(current_user),
+                "text": req.message.strip(),
+                "at": now,
+            }
+        ],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.support_tickets.insert_one(ticket.copy())
+    ticket.pop("_id", None)
+    return {"success": True, "ticket": ticket}
+
+
+@api.get("/support/tickets")
+async def list_my_tickets(current_user: dict = Depends(get_current_user)):
+    if current_user.get("user_type") != "customer":
+        raise HTTPException(status_code=403, detail="Customer access required")
+    cursor = (
+        db.support_tickets.find({"customer_id": current_user["id"]}, {"_id": 0, "messages": 0})
+        .sort("last_message_at", -1)
+        .limit(100)
+    )
+    items = await cursor.to_list(length=100)
+    return {"tickets": items, "count": len(items)}
+
+
+@api.get("/support/tickets/{ticket_id}")
+async def get_ticket(ticket_id: str, current_user: dict = Depends(get_current_user)):
+    ticket = await db.support_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    role = current_user.get("user_type")
+    if role == "customer" and ticket["customer_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if role not in ("customer", "admin"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    # Clear unread counter for the viewing party
+    if role == "customer":
+        await db.support_tickets.update_one(
+            {"id": ticket_id}, {"$set": {"unread_for_customer": 0}}
+        )
+        ticket["unread_for_customer"] = 0
+    elif role == "admin":
+        await db.support_tickets.update_one(
+            {"id": ticket_id}, {"$set": {"unread_for_admin": 0}}
+        )
+        ticket["unread_for_admin"] = 0
+    return {"ticket": ticket}
+
+
+@api.post("/support/tickets/{ticket_id}/messages")
+async def add_ticket_message(
+    ticket_id: str,
+    req: AddTicketMessageRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    text = req.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    ticket = await db.support_tickets.find_one({"id": ticket_id})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    role = current_user.get("user_type")
+    if role == "customer" and ticket["customer_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if role not in ("customer", "admin"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    now = now_utc().isoformat()
+    msg = {
+        "id": make_id(),
+        "author": _ticket_actor(current_user),
+        "text": text,
+        "at": now,
+    }
+    set_fields = {
+        "last_message_preview": text[:120],
+        "last_message_at": now,
+        "updated_at": now,
+    }
+    inc_fields = {}
+    if role == "customer":
+        inc_fields["unread_for_admin"] = 1
+        # reopen if customer replies on a resolved/closed ticket
+        if ticket.get("status") in ("resolved", "closed"):
+            set_fields["status"] = "open"
+    else:  # admin
+        inc_fields["unread_for_customer"] = 1
+        if ticket.get("status") == "open":
+            set_fields["status"] = "pending"
+
+    update = {"$push": {"messages": msg}, "$set": set_fields}
+    if inc_fields:
+        update["$inc"] = inc_fields
+
+    await db.support_tickets.update_one({"id": ticket_id}, update)
+    ticket = await db.support_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    return {"success": True, "ticket": ticket, "message": msg}
+
+
+@api.get("/admin/support/tickets")
+async def admin_list_tickets(
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    query: dict = {}
+    if status:
+        query["status"] = status
+    cursor = (
+        db.support_tickets.find(query, {"_id": 0, "messages": 0})
+        .sort("last_message_at", -1)
+        .limit(200)
+    )
+    items = await cursor.to_list(length=200)
+    return {"tickets": items, "count": len(items)}
+
+
+@api.put("/admin/support/tickets/{ticket_id}/status")
+async def admin_update_ticket_status(
+    ticket_id: str,
+    req: UpdateTicketStatusRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    res = await db.support_tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"status": req.status, "updated_at": now_utc().isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return {"success": True, "status": req.status}
+
+
+# -------------------------------------------------------------------
 @app.on_event("shutdown")
 async def shutdown_db():
     client.close()

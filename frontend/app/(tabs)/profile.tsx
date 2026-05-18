@@ -1,30 +1,20 @@
 /**
- * Profile tab
+ * Customer Profile tab — fully wired menu items
  */
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Image, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, typography, radius, shadows } from '@/src/theme';
-import { translations } from '@/src/i18n';
+import { colors, spacing, radius, shadows } from '@/src/theme';
 import { useAuth } from '@/src/context/AuthContext';
+import { useLocale } from '@/src/context/LocaleContext';
 
 const LOGO_URL =
   'https://customer-assets.emergentagent.com/job_eb826b44-ecc6-46f2-b4e7-84a184f8d38a/artifacts/x4ziw5ow_IMG_20260419_223622_456.webp';
 
-const MENU: { key: string; icon: any; label: string; action?: string }[] = [
-  { key: 'edit', icon: 'create-outline', label: 'تعديل الملف الشخصي' },
-  { key: 'addresses', icon: 'location-outline', label: 'عناويني المحفوظة' },
-  { key: 'payments', icon: 'wallet-outline', label: 'طرق الدفع' },
-  { key: 'notifications', icon: 'notifications-outline', label: 'الإشعارات' },
-  { key: 'lang', icon: 'language-outline', label: 'اللغة' },
-  { key: 'help', icon: 'help-circle-outline', label: 'مركز المساعدة' },
-  { key: 'about', icon: 'information-circle-outline', label: 'عن التطبيق' },
-];
-
 export default function Profile() {
-  const t = translations.ar;
+  const { t, locale } = useLocale();
   const { user, signOut } = useAuth();
 
   const doLogout = async () => {
@@ -33,19 +23,76 @@ export default function Profile() {
   };
 
   const handleLogout = () => {
+    const title = t.logout;
+    const msg = locale === 'ar' ? 'هل أنت متأكد من تسجيل الخروج؟' : 'Are you sure you want to log out?';
     if (Platform.OS === 'web') {
-      // react-native-web Alert.alert silently no-ops on destructive variants;
-      // use the browser-native confirm for parity.
-      // eslint-disable-next-line no-alert
-      const ok = typeof window !== 'undefined' && window.confirm('هل أنت متأكد من تسجيل الخروج؟');
+      const ok = typeof window !== 'undefined' && window.confirm(msg);
       if (ok) doLogout();
       return;
     }
-    Alert.alert('تسجيل الخروج', 'هل أنت متأكد من تسجيل الخروج؟', [
-      { text: 'إلغاء', style: 'cancel' },
-      { text: 'خروج', style: 'destructive', onPress: doLogout },
+    Alert.alert(title, msg, [
+      { text: t.cancel, style: 'cancel' },
+      { text: t.logout, style: 'destructive', onPress: doLogout },
     ]);
   };
+
+  const comingSoon = () => {
+    const title = locale === 'ar' ? 'قريباً' : 'Coming soon';
+    const body = locale === 'ar' ? 'هذه الميزة ستكون متاحة قريباً' : 'This feature will be available soon';
+    if (Platform.OS === 'web') {
+      typeof window !== 'undefined' && window.alert(`${title}\n${body}`);
+    } else {
+      Alert.alert(title, body);
+    }
+  };
+
+  const menu: { key: string; icon: any; label: string; onPress: () => void; testID: string; rightChip?: string }[] = [
+    {
+      key: 'edit', icon: 'create-outline',
+      label: locale === 'ar' ? 'تعديل الملف الشخصي' : 'Edit Profile',
+      onPress: () => router.push('/settings/edit-profile'),
+      testID: 'profile-menu-edit',
+    },
+    {
+      key: 'addresses', icon: 'location-outline',
+      label: locale === 'ar' ? 'عناويني المحفوظة' : 'Saved Addresses',
+      onPress: comingSoon,
+      testID: 'profile-menu-addresses',
+      rightChip: locale === 'ar' ? 'قريباً' : 'Soon',
+    },
+    {
+      key: 'payments', icon: 'wallet-outline',
+      label: locale === 'ar' ? 'طرق الدفع' : 'Payment Methods',
+      onPress: comingSoon,
+      testID: 'profile-menu-payments',
+      rightChip: locale === 'ar' ? 'قريباً' : 'Soon',
+    },
+    {
+      key: 'lang', icon: 'language-outline',
+      label: t.language,
+      onPress: () => router.push('/settings/language'),
+      testID: 'profile-menu-lang',
+      rightChip: locale === 'ar' ? 'العربية' : 'English',
+    },
+    {
+      key: 'support', icon: 'chatbubble-ellipses-outline',
+      label: t.support,
+      onPress: () => router.push('/support'),
+      testID: 'profile-menu-support',
+    },
+    {
+      key: 'help', icon: 'help-circle-outline',
+      label: t.helpCenter,
+      onPress: () => router.push('/settings/help'),
+      testID: 'profile-menu-help',
+    },
+    {
+      key: 'about', icon: 'information-circle-outline',
+      label: t.aboutApp,
+      onPress: () => router.push('/settings/about'),
+      testID: 'profile-menu-about',
+    },
+  ];
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -55,15 +102,19 @@ export default function Profile() {
           <View style={styles.avatarWrap}>
             <View style={styles.avatar}>
               <Text style={styles.avatarLetter}>
-                {(user?.name || 'م').charAt(0)}
+                {(user?.name || (locale === 'ar' ? 'م' : 'U')).charAt(0).toUpperCase()}
               </Text>
             </View>
-            <Pressable style={styles.editAvatar} testID="edit-avatar-btn">
-              <Ionicons name="camera" size={14} color={colors.textOnBrand} />
+            <Pressable
+              style={styles.editAvatar}
+              testID="edit-avatar-btn"
+              onPress={() => router.push('/settings/edit-profile')}
+            >
+              <Ionicons name="create" size={14} color={colors.textOnBrand} />
             </Pressable>
           </View>
           <Text style={styles.userName} testID="profile-user-name">
-            {user?.name || 'مستخدم'}
+            {user?.name || (locale === 'ar' ? 'مستخدم' : 'User')}
           </Text>
           <Text style={styles.userPhone}>{user?.phone}</Text>
 
@@ -82,7 +133,7 @@ export default function Profile() {
             </View>
             <View style={styles.statDivider} />
             <View style={styles.stat}>
-              <Text style={styles.statValue}>عضو</Text>
+              <Text style={styles.statValue}>{locale === 'ar' ? 'عضو' : 'VIP'}</Text>
               <Text style={styles.statLabel}>VIP</Text>
             </View>
           </View>
@@ -90,12 +141,12 @@ export default function Profile() {
 
         {/* Menu */}
         <View style={styles.menu}>
-          {MENU.map((m, idx) => (
+          {menu.map((m, idx) => (
             <Pressable
               key={m.key}
-              testID={`profile-menu-${m.key}`}
-              style={[styles.menuItem, idx < MENU.length - 1 && styles.menuItemBorder]}
-              onPress={() => Alert.alert('قريباً', 'هذه الميزة ستكون متاحة قريباً')}
+              testID={m.testID}
+              style={[styles.menuItem, idx < menu.length - 1 && styles.menuItemBorder]}
+              onPress={m.onPress}
             >
               <View style={styles.menuLeft}>
                 <View style={styles.menuIconWrap}>
@@ -103,7 +154,14 @@ export default function Profile() {
                 </View>
                 <Text style={styles.menuLabel}>{m.label}</Text>
               </View>
-              <Ionicons name="chevron-back" size={20} color={colors.textDisabled} />
+              <View style={styles.menuRight}>
+                {m.rightChip ? <Text style={styles.chip}>{m.rightChip}</Text> : null}
+                <Ionicons
+                  name={locale === 'ar' ? 'chevron-back' : 'chevron-forward'}
+                  size={20}
+                  color={colors.textDisabled}
+                />
+              </View>
             </Pressable>
           ))}
         </View>
@@ -119,7 +177,7 @@ export default function Profile() {
 
         <View style={styles.footer}>
           <Image source={{ uri: LOGO_URL }} style={styles.footerLogo} resizeMode="contain" />
-          <Text style={styles.version}>الإصدار 1.0.0</Text>
+          <Text style={styles.version}>{locale === 'ar' ? 'الإصدار' : 'Version'} 1.0.0</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -195,6 +253,14 @@ const styles = StyleSheet.create({
   },
   menuItemBorder: { borderBottomWidth: 1, borderBottomColor: colors.darkBrown },
   menuLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  menuRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  chip: {
+    color: colors.gold, fontSize: 11, fontWeight: '700',
+    paddingHorizontal: 8, paddingVertical: 3,
+    backgroundColor: 'rgba(212,164,55,0.1)',
+    borderRadius: radius.pill,
+    borderWidth: 1, borderColor: 'rgba(212,164,55,0.3)',
+  },
   menuIconWrap: {
     width: 36,
     height: 36,
