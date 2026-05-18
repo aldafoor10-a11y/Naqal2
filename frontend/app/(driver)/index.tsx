@@ -27,6 +27,7 @@ import {
   driverAcceptOrder,
   driverRejectOrder,
 } from '@/src/api/client';
+import { getSocket } from '@/src/realtime/socket';
 import { formatIQD, formatKm, formatMinutes } from '@/src/utils/format';
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -62,14 +63,39 @@ export default function DriverHome() {
     }, [loadOrders])
   );
 
-  // Poll new orders every 6s while online
+  // Poll new orders every 6s while online + listen for real-time new_order events
   useEffect(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     if (isOnline) {
-      pollRef.current = setInterval(loadOrders, 6000);
+      pollRef.current = setInterval(loadOrders, 15000); // lighter polling thanks to socket
     }
+
+    let onNewOrder: ((p: any) => void) | null = null;
+    let socketReady = false;
+    (async () => {
+      if (!isOnline) return;
+      try {
+        const s = await getSocket();
+        onNewOrder = (payload: any) => {
+          if (payload?.order) {
+            setAvailable((prev) => {
+              if (prev.some((o) => o.id === payload.order.id)) return prev;
+              return [payload.order, ...prev];
+            });
+          }
+        };
+        s.on('new_order', onNewOrder);
+        socketReady = true;
+      } catch (e) {
+        console.warn('[driver-home] socket failed, polling only', e);
+      }
+    })();
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      if (socketReady && onNewOrder) {
+        getSocket().then((s) => s.off('new_order', onNewOrder!)).catch(() => {});
+      }
     };
   }, [isOnline, loadOrders]);
 

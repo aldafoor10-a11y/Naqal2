@@ -15,6 +15,7 @@ from typing import List, Optional, Literal
 
 import bcrypt
 import jwt
+import socketio
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -614,6 +615,12 @@ async def create_order(req: CreateOrderRequest, current_user: dict = Depends(get
         logger.info(
             f"[MANUAL REVIEW] Order {order['order_number']} ({round(distance,1)}km) sent to admin for pricing approval"
         )
+    # Push to online drivers (excluding manual-review since price isn't set)
+    if not requires_manual:
+        try:
+            await sio.emit("new_order", {"order": order}, room="drivers")
+        except Exception:
+            pass
     return {"success": True, "order": order}
 
 
@@ -750,7 +757,14 @@ async def driver_update_location(
             }
         },
     )
-    # Also propagate to any active orders this driver has
+    # Propagate to any active orders this driver has + push via socket
+    active_orders = await db.orders.find(
+        {
+            "driver_id": current_user["id"],
+            "status": {"$in": ["accepted", "arriving", "picked_up", "in_transit"]},
+        },
+        {"_id": 0, "id": 1},
+    ).to_list(length=20)
     await db.orders.update_many(
         {
             "driver_id": current_user["id"],
@@ -758,6 +772,13 @@ async def driver_update_location(
         },
         {"$set": {"driver_location": loc, "updated_at": now_utc().isoformat()}},
     )
+    payload = {
+        "driver_id": current_user["id"],
+        "location": loc,
+        "at": now_utc().isoformat(),
+    }
+    for o in active_orders:
+        await _emit_to_order(o["id"], "driver_location", {**payload, "order_id": o["id"]})
     return {"success": True}
 
 
@@ -837,6 +858,7 @@ async def driver_accept_order(
     )
     if not result:
         raise HTTPException(status_code=409, detail="الطلب لم يعد متاحاً")
+    await _emit_to_order(order_id, "order_update", {"order_id": order_id, "order": result})
     return {"success": True, "order": result}
 
 
@@ -901,6 +923,7 @@ async def driver_update_status(
 
     await db.orders.update_one({"id": order_id}, update)
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    await _emit_to_order(order_id, "order_update", {"order_id": order_id, "order": order})
     return {"success": True, "order": order}
 
 
@@ -1420,6 +1443,91 @@ async def admin_update_ticket_status(
 
 
 # -------------------------------------------------------------------
+# Socket.IO real-time layer
+# -------------------------------------------------------------------
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    cors_allowed_origins="*",
+    logger=False,
+    engineio_logger=False,
+)
+
+
+async def _emit_to_order(order_id: str, event: str, data: dict) -> None:
+    """Emit an event to all clients listening to a specific order room."""
+    try:
+        await sio.emit(event, data, room=f"order:{order_id}")
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"socket emit {event} failed: {exc}")
+
+
+async def _emit_to_user(user_id: str, event: str, data: dict) -> None:
+    try:
+        await sio.emit(event, data, room=f"user:{user_id}")
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"socket emit {event} to user failed: {exc}")
+
+
+@sio.event
+async def connect(sid, environ, auth):
+    """Authenticate the socket connection via Bearer token in auth payload."""
+    token = (auth or {}).get("token") if isinstance(auth, dict) else None
+    if not token:
+        return False  # reject
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except Exception:
+        return False
+    user_id = payload.get("sub")
+    user_type = payload.get("user_type", "customer")
+    if not user_id:
+        return False
+    await sio.save_session(sid, {"user_id": user_id, "user_type": user_type})
+    # Personal room for direct messages (e.g. new-order push for a specific driver)
+    await sio.enter_room(sid, f"user:{user_id}")
+    if user_type == "driver":
+        await sio.enter_room(sid, "drivers")
+    logger.info(f"[socket] connected sid={sid} user={user_id} type={user_type}")
+    return True
+
+
+@sio.event
+async def disconnect(sid):
+    logger.info(f"[socket] disconnected sid={sid}")
+
+
+@sio.on("subscribe_order")
+async def subscribe_order(sid, data):
+    """Customer or driver subscribes to live updates for a specific order."""
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "bad payload"}
+    order_id = data.get("order_id")
+    if not order_id:
+        return {"ok": False, "error": "order_id required"}
+    session = await sio.get_session(sid)
+    user_id = session.get("user_id")
+    order = await db.orders.find_one(
+        {"id": order_id}, {"_id": 0, "customer_id": 1, "driver_id": 1}
+    )
+    if not order:
+        return {"ok": False, "error": "order not found"}
+    if user_id not in (order.get("customer_id"), order.get("driver_id")):
+        return {"ok": False, "error": "forbidden"}
+    await sio.enter_room(sid, f"order:{order_id}")
+    return {"ok": True, "room": f"order:{order_id}"}
+
+
+@sio.on("unsubscribe_order")
+async def unsubscribe_order(sid, data):
+    if not isinstance(data, dict):
+        return {"ok": False}
+    order_id = data.get("order_id")
+    if order_id:
+        await sio.leave_room(sid, f"order:{order_id}")
+    return {"ok": True}
+
+
+# -------------------------------------------------------------------
 @app.on_event("shutdown")
 async def shutdown_db():
     client.close()
@@ -1437,3 +1545,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount Socket.IO. We re-assign `app` so uvicorn serves the ASGI app that
+# multiplexes HTTP + WebSocket. The /api ingress only proxies HTTP routes,
+# so we also expose Socket.IO under /api/socket.io (handled internally by
+# the python-socketio ASGIApp by listening on socketio_path).
+app = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path="/api/socket.io")

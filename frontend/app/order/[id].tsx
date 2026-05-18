@@ -24,6 +24,7 @@ import {
   simulateAccept,
   simulateProgress,
 } from '@/src/api/client';
+import { getSocket, subscribeOrder, unsubscribeOrder } from '@/src/realtime/socket';
 import { formatIQD, formatKm, formatMinutes } from '@/src/utils/format';
 
 const STATUS_FLOW = ['pending', 'accepted', 'arriving', 'picked_up', 'in_transit', 'completed'];
@@ -72,36 +73,60 @@ export default function OrderTrack() {
     load();
   }, [load]);
 
-  // Poll for status updates. Also auto-simulate driver acceptance after 4s (demo)
+  // Real-time updates via Socket.IO (with low-frequency fallback poll)
   useEffect(() => {
-    if (!order) return;
-    if (pollRef.current) clearInterval(pollRef.current);
+    if (!order?.id) return;
+    let active = true;
+    let socketSub = false;
+    let onUpdate: ((p: any) => void) | null = null;
+    let onLoc: ((p: any) => void) | null = null;
 
-    // For pending_review: poll every 5s waiting for admin to set price.
-    if (order.status === 'pending_review') {
-      pollRef.current = setInterval(async () => {
-        try {
-          const updated = await getOrder(id as string);
-          if (updated && updated.status !== 'pending_review') {
-            setOrder(updated);
+    (async () => {
+      try {
+        const s = await getSocket();
+        const ok = await subscribeOrder(order.id);
+        if (!ok || !active) return;
+        socketSub = true;
+        onUpdate = (payload: any) => {
+          if (payload?.order && active) setOrder(payload.order);
+        };
+        onLoc = (payload: any) => {
+          if (active && payload?.location) {
+            setOrder((prev: any) =>
+              prev ? { ...prev, driver_location: payload.location } : prev
+            );
           }
-        } catch {}
-      }, 5000);
-    } else if (order.status === 'pending') {
-      // Auto-simulate driver acceptance after 4 seconds (demo)
-      pollRef.current = setInterval(async () => {
-        try {
-          const updated = await simulateAccept(id as string);
-          if (updated && updated.status !== 'pending') {
-            setOrder(updated);
-          }
-        } catch {}
-      }, 4000);
-    }
+        };
+        s.on('order_update', onUpdate);
+        s.on('driver_location', onLoc);
+      } catch (e) {
+        console.warn('[track] socket failed, falling back to polling', e);
+      }
+    })();
+
+    // Low-frequency fallback poll covers cases where socket fails or is dropped.
+    if (pollRef.current) clearInterval(pollRef.current);
+    const pollMs = order.status === 'pending_review' ? 5000 : 12000;
+    pollRef.current = setInterval(async () => {
+      try {
+        const updated = await getOrder(order.id);
+        if (updated && active) setOrder(updated);
+      } catch {}
+    }, pollMs);
+
     return () => {
+      active = false;
       if (pollRef.current) clearInterval(pollRef.current);
+      if (socketSub) {
+        unsubscribeOrder(order.id);
+      }
+      // detach listeners (safe even if not attached)
+      getSocket().then((s) => {
+        if (onUpdate) s.off('order_update', onUpdate);
+        if (onLoc) s.off('driver_location', onLoc);
+      }).catch(() => {});
     };
-  }, [order, id]);
+  }, [order?.id, order?.status]);
 
   const handleSimulateProgress = async () => {
     try {

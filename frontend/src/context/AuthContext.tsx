@@ -3,6 +3,7 @@
  */
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { fetchMe, loadToken, logout as apiLogout, setToken } from '@/src/api/client';
+import { disconnectSocket } from '@/src/realtime/socket';
 
 export type User = {
   id: string;
@@ -52,6 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const signOut = useCallback(async () => {
+    disconnectSocket();
     await apiLogout();
     setUser(null);
   }, []);

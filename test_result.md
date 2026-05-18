@@ -208,6 +208,41 @@ backend:
             ✅ Edge cases: empty subject → 400, empty message → 400, GET nonexistent ticket id → 404.
             No critical issues. All endpoints behave per spec.
 
+  - task: "Real-time Socket.IO (driver location + order updates + new_order broadcast)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/frontend/src/realtime/socket.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Added python-socketio AsyncServer mounted as ASGIApp on FastAPI at /api/socket.io.
+            Events emitted by backend:
+              - new_order        -> room "drivers"       (on customer create_order if not manual-review)
+              - order_update     -> room "order:<id>"    (on driver accept / status change)
+              - driver_location  -> room "order:<id>"    (on PUT /api/driver/location for each active order)
+            Auth: JWT in auth.token on connect; rejected if invalid. Personal room user:<id>, driver
+            extras enter room "drivers". subscribe_order(order_id) ack returns {ok, room|error} after
+            checking the caller is customer/driver on the order.
+            Local socket.io-client (python async) E2E PASS:
+              order_id=f26489ba-... customer received 5 order_update events
+              (accepted→arriving→picked_up→in_transit→completed) + 1 driver_location event.
+            Frontend wired:
+              - app/order/[id].tsx (customer tracking): connects, subscribeOrder, listens for
+                order_update & driver_location. Removed auto-simulate-accept polling; kept a 12s
+                low-frequency fallback poll for resilience.
+              - app/(driver)/index.tsx: listens for "new_order" events to insert incoming jobs without
+                waiting for the 15s poll. Polling slowed from 6s to 15s thanks to socket.
+              - src/realtime/socket.ts: singleton getSocket() with JWT auth; subscribeOrder /
+                unsubscribeOrder helpers; disconnectSocket() called on signOut.
+              - Driver job screen openNavigation now offers Waze (preferred) ↔ Apple/Google Maps
+                fallback. Mobile prompts user via Alert; web opens Waze directly.
+
+
+
 frontend:
   - task: "Role-based routing in AuthContext + verify.tsx"
     implemented: true

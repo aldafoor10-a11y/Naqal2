@@ -65,13 +65,29 @@ export default function DriverJob() {
         ? order.pickup
         : order.dropoff;
     if (!target) return;
-    const url =
+    const platformFallback =
       Platform.OS === 'ios'
         ? `https://maps.apple.com/?daddr=${target.latitude},${target.longitude}`
         : `https://www.google.com/maps/dir/?api=1&destination=${target.latitude},${target.longitude}&travelmode=driving`;
-    Linking.openURL(url).catch(() => {
-      Alert.alert('خطأ', 'تعذر فتح تطبيق الخرائط');
-    });
+    // Offer Waze first (preferred for Iraqi drivers); fall back to platform map.
+    const wazeUrl = `waze://?ll=${target.latitude},${target.longitude}&navigate=yes`;
+    const wazeWeb = `https://www.waze.com/ul?ll=${target.latitude}%2C${target.longitude}&navigate=yes`;
+
+    const choose = (url: string) => {
+      Linking.openURL(url).catch(() => {
+        Alert.alert('خطأ', 'تعذر فتح تطبيق الملاحة');
+      });
+    };
+
+    if (Platform.OS === 'web') {
+      choose(wazeWeb);
+      return;
+    }
+    Alert.alert('اختر تطبيق الملاحة', '', [
+      { text: 'Waze', onPress: () => Linking.canOpenURL(wazeUrl).then((ok) => choose(ok ? wazeUrl : wazeWeb)) },
+      { text: Platform.OS === 'ios' ? 'Apple Maps' : 'Google Maps', onPress: () => choose(platformFallback) },
+      { text: 'إلغاء', style: 'cancel' },
+    ]);
   };
 
   const callCustomer = () => {
