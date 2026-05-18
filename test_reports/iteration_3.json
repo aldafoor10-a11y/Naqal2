@@ -1,0 +1,44 @@
+{
+  "summary": "NAQAL GO iteration 3 (single-screen order flow) - ALL 14 review-request items PASS after one bug fix applied by test agent. Vehicle selection UI is fully removed (none of vehicle-kia_pickup / vehicle-pickup_truck / vehicle-medium_truck / vehicle-large_truck present in DOM). Map iframe is rendered with new 44px gradient pins + pulse keyframe CSS (verified by inspecting srcdoc: '44px', '@keyframes pulse', 'linear-gradient' all present). All required testIDs on /order/create exist: create-back-btn, mode-pickup-btn, mode-dropoff-btn, use-current-loc-btn (56x56 FAB), cargo-desc-input, cargo-notes-input, send-order-btn. Old /order/details testIDs (details-back-btn, confirm-order-btn, continue-to-details-btn) are GONE. send-order-btn correctly aria-disabled when pickup/dropoff/cargo missing and enables only when all three set. Tapping it POSTs to /api/orders (200 OK) and replaces route to /order/{uuid} (verified URL pattern). Tracking screen loads with track-back-btn, and after the 4-second poll the demo driver أحمد محمد is auto-assigned (call-driver-btn appears). Price chip overlay shows '8,500 د.ع' (formatted IQD with Arabic suffix) when both points set. Bottom-sheet summary card shows km, 11 دقيقة eta, 'نقداً' payment, and large gold total. Backend pytest suite re-run: 21/24 passing (3 TestAuth failures are stale-data artifacts from previous iterations re-using phone 7700009911 - NOT a regression; the verify-otp endpoint correctly returns needs_name=false because that user already has a saved name from iteration_1/2). POST /api/orders with vehicle_type='pickup_truck' returns full order successfully (verified end-to-end).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/verify-otp", "issue": "Test-only: phone 7700009911 reused across iterations now returns needs_name=false because the user has a saved name. Not a backend bug - test fixture needs unique phones per run (or DB cleanup between iterations). All 21 non-stateful backend tests pass."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All", "issues": ["Console warnings persist (cosmetic): shadow* / pointerEvents / Image.resizeMode deprecated style props."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_naqalgo_api.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/iteration_2.json"
+  ],
+  "action_items": [
+    "[INFORMATIONAL] Test agent applied one fix to /app/frontend/src/components/MapPicker.tsx - the iframe sendMsg() now also relays to window.parent via postMessage. Without this fix, map clicks placed visual pins inside the iframe but parent React state (pickup/dropoff) was never updated on web preview, so the price chip never appeared and send-order-btn stayed disabled. After the fix + `sudo supervisorctl restart expo`, the full flow works. Native (WebView) still works through ReactNativeWebView; web now uses window.parent.postMessage.",
+    "[OPTIONAL/COSMETIC] Address the deprecated style-prop console warnings (shadow*, pointerEvents, Image.resizeMode) before app-store submission - non-blocking."
+  ],
+  "critical_code_review_comments": [
+    "MapPicker.tsx buildHtml() sendMsg() was previously a one-way bridge to ReactNativeWebView only; the WebMap iframe parent's window.addEventListener('message', ...) handler never received marker events on web. Now fixed by dual-posting to window.parent.",
+    "/app/frontend/app/order/create.tsx is well-structured: ~600 lines, single responsibility, all interactive elements expose proper testIDs (create-back-btn, mode-pickup-btn, mode-dropoff-btn, use-current-loc-btn, cargo-desc-input, cargo-notes-input, send-order-btn, map-price-chip). Live price estimation is debounced via useEffect cancellation flag. canSubmit gate is correct: pickup && dropoff && cargoDesc.trim() && estimate. Default vehicle_type='pickup_truck' is correctly POSTed.",
+    "/app/frontend/app/order/[id].tsx tracking screen handles all 6 statuses, polls simulate-accept every 4s while pending, and stops the interval correctly on cleanup - no memory leak.",
+    "Backend /api/orders correctly accepts vehicle_type='pickup_truck' (Literal validation in CreateOrderRequest passes) and excludes ObjectId from response."
+  ],
+  "updated_files": [
+    "/app/frontend/src/components/MapPicker.tsx (sendMsg now relays to window.parent for web iframe bridge)"
+  ],
+  "success_rate": {
+    "backend": "21/24 = 87.5% (3 stale-data test failures, not real bugs)",
+    "frontend": "14/14 = 100% of iteration_3 review items"
+  },
+  "seed_data_creation": "Reused customer phone +9647700009988 from review-request credentials. One TEST_ order with id ec535e6f-... was created and auto-driver-assigned during the run; safe to leave in DB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 3 confirmed: single-screen order flow with no vehicle picker, no /order/details step, default vehicle_type='pickup_truck'. KEY testIDs on /order/create: create-back-btn, mode-pickup-btn, mode-dropoff-btn, use-current-loc-btn, cargo-desc-input, cargo-notes-input, send-order-btn, map-price-chip. To click into the Leaflet iframe in Playwright use: fl = page.frame_locator('iframe[title=\"map\"]'); await fl.locator('.leaflet-container').click(position={'x':X,'y':Y}, force=True). Then wait ~3s for /api/pricing/estimate then verify map-price-chip text contains 'د.ع'. Always `sudo supervisorctl restart expo` after MapPicker/create.tsx edits because Metro is in CI cache mode.",
+  "rca_of_issue": "INITIAL FAIL: send-order-btn stayed aria-disabled='true' after simulated map clicks. RCA: In MapPicker.tsx buildHtml(), the inline JS sendMsg() only called window.ReactNativeWebView.postMessage(...). On web, the iframe parent (WebMap component) listens via window.addEventListener('message', handler), so it expected events via window.parent.postMessage(...). Because the iframe never relayed to its parent, React state never updated, estimate never ran, and the submit gate never opened. FIX: extended sendMsg() to also do `window.parent && window.parent !== window && window.parent.postMessage(JSON.stringify(payload), '*')`. After expo restart, full end-to-end flow (map click → price chip → enable send → POST /api/orders → /order/[id] → 4s driver auto-assignment) works."
+}

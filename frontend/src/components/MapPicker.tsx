@@ -36,16 +36,40 @@ const buildHtml = (center: LatLng) => `<!DOCTYPE html>
   html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; background: ${colors.appBg}; }
   .leaflet-container { background: ${colors.appBg}; }
   .pin {
-    width: 36px; height: 36px;
+    width: 44px; height: 44px;
     border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.6);
-    font-size: 18px;
-    border: 2px solid ${colors.appBg};
+    box-shadow: 0 6px 20px rgba(0,0,0,0.7), 0 0 0 4px rgba(13,9,7,0.6);
+    font-size: 18px; font-weight: 700;
+    border: 3px solid ${colors.appBg};
+    transition: transform 0.2s ease;
   }
-  .pin-pickup { background: ${colors.gold}; color: ${colors.appBg}; }
-  .pin-dropoff { background: #FF453A; color: #fff; }
-  .pin-driver { background: #34C759; color: #fff; }
+  .pin:active { transform: scale(1.15); }
+  .pin-pickup {
+    background: linear-gradient(135deg, ${colors.gold} 0%, ${colors.goldDark} 100%);
+    color: ${colors.appBg};
+  }
+  .pin-dropoff {
+    background: linear-gradient(135deg, #FF6B5C 0%, #C73A2F 100%);
+    color: #fff;
+  }
+  .pin-driver {
+    background: linear-gradient(135deg, #4CD964 0%, #2E9E45 100%);
+    color: #fff;
+  }
+  .pulse {
+    position: absolute;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: ${colors.gold};
+    opacity: 0.4;
+    animation: pulse 2s infinite;
+    pointer-events: none;
+  }
+  @keyframes pulse {
+    0% { transform: scale(1); opacity: 0.4; }
+    100% { transform: scale(2.5); opacity: 0; }
+  }
 </style>
 </head>
 <body>
@@ -65,13 +89,18 @@ const buildHtml = (center: LatLng) => `<!DOCTYPE html>
     return L.divIcon({
       className: '',
       html: '<div class="pin pin-'+kind+'">'+label+'</div>',
-      iconSize: [36,36], iconAnchor: [18,18]
+      iconSize: [44,44], iconAnchor: [22,22]
     });
   }
 
   function sendMsg(payload){
+    var s = JSON.stringify(payload);
     if (window.ReactNativeWebView) {
-      window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+      window.ReactNativeWebView.postMessage(s);
+    }
+    // Web iframe bridge: relay to parent window
+    if (window.parent && window.parent !== window) {
+      try { window.parent.postMessage(s, '*'); } catch(e){}
     }
   }
 
@@ -109,8 +138,10 @@ const buildHtml = (center: LatLng) => `<!DOCTYPE html>
     if (pickupMarker && dropoffMarker) {
       var a = pickupMarker.getLatLng();
       var b = dropoffMarker.getLatLng();
-      routeLine = L.polyline([[a.lat,a.lng],[b.lat,b.lng]], { color: '${colors.gold}', weight: 4, dashArray: '8 6' }).addTo(map);
-      map.fitBounds(routeLine.getBounds(), { padding: [60,60] });
+      // Outer glow line
+      L.polyline([[a.lat,a.lng],[b.lat,b.lng]], { color: '${colors.gold}', weight: 8, opacity: 0.2 }).addTo(map);
+      routeLine = L.polyline([[a.lat,a.lng],[b.lat,b.lng]], { color: '${colors.gold}', weight: 4, dashArray: '10 6', opacity: 0.95 }).addTo(map);
+      map.fitBounds(routeLine.getBounds(), { padding: [80,80], maxZoom: 14 });
     }
   }
 
