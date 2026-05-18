@@ -30,6 +30,14 @@ NAQAL GO is a premium transportation marketplace mobile app connecting customers
 - Vehicle multipliers: Kia 1.0×, Pickup 1.1×, Medium 1.2×, Large 1.35×
 - Peak hours (7-9, 17-20 Iraq time): +15%
 - Minimum order: 5,000 IQD; rounded to nearest 500
+- **Long-distance cap (NEW)**: at ≥75 km, total price stops increasing — fixed at **75,000 IQD** maximum.
+- **Manual review (NEW)**: orders with road distance > 130 km cannot be auto-priced. The customer sees a notice and the order is sent to the admin/manager with status `pending_review` for manual price approval.
+
+## Admin Pricing Endpoints
+- `GET /api/admin/orders/pending-review` — list orders awaiting manual price
+- `GET /api/admin/orders[?status=]` — list all orders with optional filter
+- `POST /api/admin/orders/{id}/set-price` body `{price, note?}` — set manual price (min 5000 IQD); flips status `pending_review → pending`
+- `POST /api/admin/orders/{id}/reject` — admin rejects long-distance order; status→`cancelled`
 
 ## Backend Endpoints
 - `POST /api/auth/send-otp` — mock OTP (any phone, code 123456)
