@@ -74,6 +74,14 @@ export async function fetchMe() {
 
 export async function logout() {
   await setToken(null);
+  await storage.removeItem('cached_user');
+}
+
+// ---- Admin (phone+password login from mobile) ----
+export async function adminPhoneLogin(phone: string, password: string) {
+  const { data } = await api.post('/auth/admin/phone-login', { phone, password });
+  if (data.token) await setToken(data.token);
+  return data;
 }
 
 // ---- Driver ----

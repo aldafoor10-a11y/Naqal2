@@ -1,11 +1,13 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Users, DollarSign, MessageSquare, Package, LogOut, Truck } from 'lucide-react';
+import { LayoutDashboard, Users, DollarSign, MessageSquare, Package, LogOut, Truck, Send, Sliders } from 'lucide-react';
 import { clearSession, getSessionUser } from '../api';
 import { disconnectAdminSocket } from '../socket';
 
 const items = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/pricing', label: 'Pricing Review', icon: DollarSign },
+  { to: '/dispatch', label: 'Dispatch', icon: Send },
+  { to: '/pricing', label: 'Manual Pricing', icon: DollarSign },
+  { to: '/pricing-settings', label: 'Pricing Settings', icon: Sliders },
   { to: '/drivers', label: 'Drivers', icon: Users },
   { to: '/orders', label: 'Orders', icon: Package },
   { to: '/support', label: 'Support', icon: MessageSquare },

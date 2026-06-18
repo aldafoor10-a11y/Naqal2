@@ -104,3 +104,21 @@ export async function updateTicketStatus(id: string, status: string) {
   const { data } = await api.put(`/admin/support/tickets/${id}/status`, { status });
   return data;
 }
+
+// ---- Assignment & pricing ----
+export async function assignDriver(orderId: string, driverId: string) {
+  const { data } = await api.post(`/admin/orders/${orderId}/assign-driver`, { driver_id: driverId });
+  return data.order;
+}
+export async function overridePrice(orderId: string, price: number) {
+  const { data } = await api.post(`/admin/orders/${orderId}/override-price`, { price });
+  return data.order;
+}
+export async function fetchPricingSettings() {
+  const { data } = await api.get('/admin/pricing-settings');
+  return data.settings || {};
+}
+export async function updatePricingSettings(payload: any) {
+  const { data } = await api.put('/admin/pricing-settings', payload);
+  return data.settings;
+}

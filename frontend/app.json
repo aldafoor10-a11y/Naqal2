@@ -56,7 +56,8 @@
         {
           "photosPermission": "Add photos of cargo to your order"
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true

@@ -355,11 +355,154 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Driver UI tabs (dashboard, earnings, history, profile, job)"
-    - "Role-based routing in AuthContext + verify.tsx"
+    - "Hidden owner admin (phone+password) login"
+    - "Centralized order workflow (admin-assigned drivers only)"
+    - "Pricing settings & price override"
+    - "Booking scheduling fields"
+    - "OSM light map tiles + Nominatim location search"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+# --- Pivot regression results (testing agent) ---
+backend_pivot_tests:
+  - task: "Hidden owner admin phone+password login + OTP block"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py (auth/admin/phone-login, send-otp guard)"
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            All login + OTP-block cases PASS via public ingress.
+            • POST /api/auth/admin/phone-login {phone:"07517300194", password:"yassir00"} → 200 + admin token, admin.user_type=admin.
+            • wrong password → 401.
+            • +9647517300194 variant → 200 (both forms accepted).
+            • POST /api/auth/send-otp for both "07517300194" and "+9647517300194" → 403 "هذا الرقم محجوز".
+            • GET /api/admin/stats with owner_token → 200, full payload (totals/pipeline/today/week/series_7d).
+
+  - task: "Hidden admin invisibility in user listings"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py (admin_create_driver, admin_list_drivers)"
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            CRITICAL FINDING. The hidden admin itself is correctly stored only in db.admins
+            (id 52df233f, phone "07517300194", hidden:true) and does NOT appear in
+            /api/admin/drivers as itself. HOWEVER:
+            • db.users contains an UNRELATED driver record with phone "+9647517300194"
+              (id 710165e6, name "ياسر حسن", vehicle_type medium_truck, created_by_admin="admin",
+              created 2026-05-18). This driver shows up in GET /api/admin/drivers.
+            • Backend has NO policy preventing the hidden owner phone from being attached
+              to a regular customer/driver. admin_create_driver only blocks on user-table
+              duplicates; it does not consult db.admins for hidden-reserved phones.
+            • Effect: Test #26 (POST /api/admin/drivers with hidden phone) *coincidentally*
+              returns 400 only because the legacy driver above already occupies that phone
+              in db.users. If that legacy driver is removed, the endpoint would happily
+              create another driver with the reserved phone.
+
+            Recommended fix for main agent:
+              In admin_create_driver (and any future customer-self-onboard path), additionally
+              check `await db.admins.find_one({"phone": {"$in": candidates_of_normalized}})`
+              and return 400 "Reserved phone" if matched. Also delete the legacy leaked
+              driver (id 710165e6) or rename its phone to free up the reserved number.
+
+  - task: "Centralized order workflow (drivers no longer broadcast)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py (create_order, driver_available_orders, driver_accept_order, assign-driver)"
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            PASS. Customer order with booking_type=scheduled, scheduled_date=2026-06-25,
+            scheduled_time=14:30, customer_live_location all stored. status=pending after
+            create. Driver online; GET /driver/orders/available returned 0 for that order
+            (correct — admin hadn't assigned). POST /driver/orders/{id}/accept on
+            un-assigned order returned 409 "الطلب لم يعد متاحاً" (4xx ✓).
+
+  - task: "Admin assigns driver"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py (admin_assign_driver)"
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            PASS. POST /admin/orders/{id}/assign-driver → 200, status=assigned, assigned_driver_id matches.
+            Order then appears in /driver/orders/available. Driver POST /accept → 200, status=accepted.
+            Re-assign accepted order → 400 "Cannot assign order with status accepted".
+            Assigning to unapproved driver → 400 "Driver is not approved".
+
+  - task: "Price override + Pricing settings"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py (override-price, pricing-settings GET/PUT)"
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            PASS.
+            • POST /admin/orders/{id}/override-price {price:99999} (owner) → 200, final_price=99999.
+            • {price:500} → 400 "Price too low" (threshold 1000).
+            • Same as customer → 403 "Admin access required".
+            • GET /admin/pricing-settings → 200 with min_price, max_auto_price, auto_cap_distance_km,
+              manual_review_distance_km, peak_multiplier, vehicle_multiplier, tiers.
+            • PUT {min_price:12500, max_auto_price:80000} → 200; subsequent GET reflects 12500/80000.
+            • PUT as customer → 403.
+
+  - task: "Regression: admin login + pending-review + web-admin SPA"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            PASS. POST /auth/admin/login admin/naqal2026 → 200. GET /admin/orders/pending-review
+            (owner) → 200. GET /api/web-admin/ → 200 text/html serving the Vite SPA shell.
+
+agent_communication_pivot:
+    - agent: "testing"
+      message: |
+        Pivot regression test complete via public ingress
+        (https://naqal-go.preview.emergentagent.com). Test file: /app/naqal_pivot_test.py
+        Result: 31 PASS / 1 FAIL across the 29 review-request scenarios (+ extra checks).
+
+        🔴 FAILURE — Test #7 "Hidden admin invisibility":
+          A regular driver in db.users with phone "+9647517300194" (name "ياسر حسن",
+          id 710165e6-eb52-48e6-8a14-998962c51ded, created_by_admin="admin" on 2026-05-18)
+          appears in GET /api/admin/drivers. The hidden admin itself (db.admins,
+          hidden:true, phone "07517300194") is correctly NOT in the list, but the
+          backend has no policy that prevents the reserved hidden phone from being
+          used to create a customer or driver. This also means test #26 only happens
+          to pass because of duplicate-user collision — not because of a "reserved
+          phone" rule.
+
+          Fix required (main agent):
+            1. In `admin_create_driver` (and any future signup path), reject if
+               normalized phone matches any db.admins entry (especially hidden=True).
+            2. Delete (or rename) the leaked legacy driver record id 710165e6 so the
+               admin/drivers listing no longer shows the hidden owner's phone.
+
+        ✅ All other 28 scenarios from sections A,B(partial),C,D,E,F,G,H PASS:
+          • Phone+password login (both 0… and +964…), wrong-password 401, OTP block,
+            /admin/stats with owner token.
+          • Centralized workflow: order created with scheduling fields & customer_live_location;
+            driver doesn't see un-assigned order; accept on un-assigned → 409.
+          • Admin assign → 200/assigned; driver sees + accepts → accepted; re-assign accepted → 400;
+            assign to unapproved driver → 400.
+          • Price override 99999 → applied; 500 → 400; customer → 403.
+          • Pricing settings GET/PUT round-trip works; customer PUT → 403.
+          • G (#26) returns 400 ONLY because a stale leaked driver already exists with that
+            phone — note this is not real reservation enforcement.
+          • Original admin login (admin/naqal2026) still works; /admin/orders/pending-review
+            → 200; /api/web-admin/ → 200 HTML.
+
+        No mocked integrations involved in these endpoints. Backend log clean (only mock OTP
+        notices). Score: 31/32 atomic assertions PASS, 1 critical data-policy gap.
 
 agent_communication:
     - agent: "main"

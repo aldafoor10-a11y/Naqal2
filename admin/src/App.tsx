@@ -3,6 +3,8 @@ import Login from './pages/Login';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import PricingReview from './pages/PricingReview';
+import PricingSettings from './pages/PricingSettings';
+import Dispatch from './pages/Dispatch';
 import Drivers from './pages/Drivers';
 import Orders from './pages/Orders';
 import SupportInbox from './pages/SupportInbox';
@@ -26,7 +28,9 @@ export default function App() {
         }
       >
         <Route index element={<Dashboard />} />
+        <Route path="dispatch" element={<Dispatch />} />
         <Route path="pricing" element={<PricingReview />} />
+        <Route path="pricing-settings" element={<PricingSettings />} />
         <Route path="drivers" element={<Drivers />} />
         <Route path="orders" element={<Orders />} />
         <Route path="support" element={<SupportInbox />} />

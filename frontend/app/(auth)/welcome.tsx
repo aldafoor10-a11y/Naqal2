@@ -56,6 +56,15 @@ export default function Welcome() {
                 لديك حساب؟ <Text style={styles.signInLink}>سجل الدخول</Text>
               </Text>
             </Pressable>
+
+            <Pressable
+              onPress={() => router.push('/(auth)/admin-login')}
+              style={styles.adminRow}
+              testID="admin-login-link"
+            >
+              <Ionicons name="shield-checkmark" size={14} color={colors.gold} />
+              <Text style={styles.adminText}>دخول الإدارة</Text>
+            </Pressable>
           </View>
         </SafeAreaView>
       </ImageBackground>
@@ -131,4 +140,14 @@ const styles = StyleSheet.create({
   signInRow: { alignItems: 'center', marginTop: spacing.sm },
   signInText: { color: colors.textSecondary, fontSize: 14 },
   signInLink: { color: colors.gold, fontWeight: '700' },
+  adminRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: spacing.sm,
+    paddingVertical: 8,
+    opacity: 0.7,
+  },
+  adminText: { color: colors.gold, fontSize: 12, fontWeight: '600' },
 });
