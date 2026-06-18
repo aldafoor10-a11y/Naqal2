@@ -54,17 +54,35 @@ export default function OrderCreate() {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Auto-detect current location → pickup
+  // Live location captured on permission grant (passed to backend with order)
+  const [liveLocation, setLiveLocation] = useState<LatLng | null>(null);
+
+  // Scheduling
+  const [bookingType, setBookingType] = useState<'now' | 'scheduled' | 'date' | 'time'>('now');
+  const [scheduledDate, setScheduledDate] = useState<string>('');
+  const [scheduledTime, setScheduledTime] = useState<string>('');
+
+  // Location search (Nominatim)
+  const [searchQ, setSearchQ] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  // Auto-detect current location → pickup + remember as live location
   useEffect(() => {
     (async () => {
       try {
-        const { status } = await Location.getForegroundPermissionsAsync();
+        let { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          const ask = await Location.requestForegroundPermissionsAsync();
+          status = ask.status;
+        }
         if (status === 'granted') {
           const loc = await Location.getCurrentPositionAsync({});
           const here: LatLng = {
             latitude: loc.coords.latitude,
             longitude: loc.coords.longitude,
           };
+          setLiveLocation(here);
           setPickup(here);
           mapRef.current?.setCenter(here, 14);
         }
@@ -159,6 +177,16 @@ export default function OrderCreate() {
         cargo_description: cargoDesc.trim(),
         cargo_notes: notes.trim(),
         cargo_images: [],
+        booking_type: bookingType,
+        scheduled_date: bookingType !== 'now' ? scheduledDate || null : null,
+        scheduled_time: bookingType !== 'now' ? scheduledTime || null : null,
+        customer_live_location: liveLocation
+          ? {
+              address: 'live',
+              latitude: liveLocation.latitude,
+              longitude: liveLocation.longitude,
+            }
+          : null,
       });
       router.replace(`/order/${order.id}`);
     } catch (e: any) {
@@ -339,6 +367,55 @@ export default function OrderCreate() {
               multiline
               maxLength={200}
             />
+          </View>
+
+          {/* Booking schedule */}
+          <View style={styles.inputBlock}>
+            <Text style={styles.inputLabel}>وقت الخدمة</Text>
+            <View style={styles.scheduleRow}>
+              {[
+                { k: 'now', l: 'فوراً' },
+                { k: 'scheduled', l: 'لاحقاً' },
+                { k: 'date', l: 'تاريخ' },
+                { k: 'time', l: 'وقت' },
+              ].map((opt) => {
+                const active = bookingType === (opt.k as any);
+                return (
+                  <Pressable
+                    key={opt.k}
+                    onPress={() => setBookingType(opt.k as any)}
+                    style={[styles.scheduleBtn, active && styles.scheduleBtnActive]}
+                    testID={`booking-${opt.k}`}
+                  >
+                    <Text style={[styles.scheduleBtnText, active && styles.scheduleBtnTextActive]}>{opt.l}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {bookingType !== 'now' && (
+              <View style={styles.scheduleInputs}>
+                {(bookingType === 'scheduled' || bookingType === 'date') && (
+                  <TextInput
+                    placeholder="التاريخ (YYYY-MM-DD)"
+                    placeholderTextColor={colors.textDisabled}
+                    value={scheduledDate}
+                    onChangeText={setScheduledDate}
+                    style={[styles.input, { flex: 1 }]}
+                    testID="schedule-date"
+                  />
+                )}
+                {(bookingType === 'scheduled' || bookingType === 'time') && (
+                  <TextInput
+                    placeholder="الوقت (HH:MM)"
+                    placeholderTextColor={colors.textDisabled}
+                    value={scheduledTime}
+                    onChangeText={setScheduledTime}
+                    style={[styles.input, { flex: 1 }]}
+                    testID="schedule-time"
+                  />
+                )}
+              </View>
+            )}
           </View>
 
           {/* Price summary */}
@@ -658,4 +735,18 @@ const styles = StyleSheet.create({
     marginTop: -spacing.xs,
   },
   safetyText: { color: colors.textSecondary, fontSize: 12 },
+  scheduleRow: { flexDirection: 'row', gap: 6, marginTop: 4 },
+  scheduleBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: 1,
+    borderColor: colors.darkBrown,
+    alignItems: 'center',
+  },
+  scheduleBtnActive: { backgroundColor: 'rgba(212,164,55,0.15)', borderColor: colors.gold },
+  scheduleBtnText: { color: colors.textSecondary, fontSize: 13, fontWeight: '600' },
+  scheduleBtnTextActive: { color: colors.gold, fontWeight: '700' },
+  scheduleInputs: { flexDirection: 'row', gap: 8, marginTop: 8 },
 });

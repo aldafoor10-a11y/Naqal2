@@ -1061,6 +1061,19 @@ async def admin_create_driver(
 ):
     _require_admin(current_user)
     phone = normalize_phone(req.phone)
+
+    # Block reserved owner phone in any variant
+    hidden = await db.admins.find_one({"hidden": True})
+    if hidden:
+        reserved = {hidden.get("phone")}
+        hp = hidden.get("phone", "")
+        if hp.startswith("0"):
+            reserved.add("+964" + hp[1:])
+        if hp.startswith("+964"):
+            reserved.add("0" + hp[4:])
+        if phone in reserved or req.phone in reserved:
+            raise HTTPException(status_code=400, detail="This phone number is reserved")
+
     existing = await db.users.find_one({"phone": phone})
     if existing:
         raise HTTPException(
@@ -1337,6 +1350,12 @@ async def seed_admin():
             }
         )
         logger.info("Hidden owner admin seeded (phone-based)")
+
+    # Sanitize: remove any normal user/driver that may have leaked the reserved phone
+    reserved_variants = [HIDDEN_PHONE, "+964" + HIDDEN_PHONE[1:]]
+    purged = await db.users.delete_many({"phone": {"$in": reserved_variants}})
+    if purged.deleted_count:
+        logger.warning(f"Purged {purged.deleted_count} stale user(s) using reserved owner phone")
 
     # Default pricing settings (mirror of PRICING dict in /api/app_settings)
     settings = await db.app_settings.find_one({"_id": "pricing"})
