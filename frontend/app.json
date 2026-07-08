@@ -14,7 +14,8 @@
         "NSLocationWhenInUseUsageDescription": "Set pickup and drop-off on the map",
         "NSPhotoLibraryUsageDescription": "Add photos of cargo to your order",
         "NSCameraUsageDescription": "Capture photos of cargo to send to driver"
-      }
+      },
+      "bundleIdentifier": "com.emergent.naqalgo.ahhcjr"
     },
     "android": {
       "adaptiveIcon": {
@@ -27,7 +28,8 @@
         "ACCESS_COARSE_LOCATION",
         "READ_EXTERNAL_STORAGE",
         "CAMERA"
-      ]
+      ],
+      "package": "com.emergent.naqalgo.ahhcjr"
     },
     "web": {
       "bundler": "metro",
